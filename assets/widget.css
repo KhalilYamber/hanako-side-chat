@@ -64,4 +64,4 @@ body {
 .provider-item .models { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
 .provider-item .models span { font-size: 11px; background: var(--bg-subtle, #eee); border-radius: 4px; padding: 1px 6px; color: var(--text-dim, #666); }
 
-#diag-output { flex: 1; white-space: pre-wrap; background: var(--bg-subtle, #f4f4f4); padding: 10px; border-radius: 8px; font-size: 12px; overflow-y: auto; line-height: 1.6; color: var(--text, #222); }
+#diag-output { flex: 0 0 auto; min-height: 140px; white-space: pre-wrap; background: var(--bg-subtle, #f4f4f4); padding: 10px; border-radius: 8px; font-size: 12px; overflow-y: auto; line-height: 1.6; color: var(--text, #222); }
