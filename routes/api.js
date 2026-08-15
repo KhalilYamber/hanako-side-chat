@@ -27,6 +27,63 @@ export default function registerSideChatRoutes(app, ctx) {
     return c.json({ ok: true, config: cfg, sessions, main });
   });
 
+  // ---------- 主对话实时同步（SSE） ----------
+
+  app.get('/api/main-events', (c) => {
+    const agentId = requestAgentId(c);
+    const signal = c.req.raw?.signal;
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream({
+      start(controller) {
+        let closed = false;
+        const send = (payload) => {
+          if (closed) return;
+          try {
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify(payload)}\n\n`));
+          } catch {
+            // 客户端已断开，忽略
+          }
+        };
+        // 订阅主对话会话事件：用户新消息 / 助手回复完成即推送，前端据此实时刷新参考上下文。
+        // 订阅是全局的（不按 sessionPath 过滤，主对话 agent 会切换），只透传事件类型，不泄露正文。
+        let unsubscribe = () => {};
+        try {
+          unsubscribe = pctx.bus.subscribe((event) => {
+            send({ type: 'main-changed', eventType: event?.type ?? null });
+          }, { types: ['message_end', 'turn_end', 'session_user_message'] });
+        } catch (e) {
+          send({ type: 'error', message: String(e?.message ?? e) });
+        }
+        const heartbeat = setInterval(() => send({ type: 'ping' }), 15000);
+        send({ type: 'ready', agentId });
+        const cleanup = () => {
+          if (closed) return;
+          closed = true;
+          clearInterval(heartbeat);
+          try {
+            unsubscribe();
+          } catch {
+            // 忽略
+          }
+          try {
+            controller.close();
+          } catch {
+            // 忽略
+          }
+        };
+        signal?.addEventListener('abort', cleanup, { once: true });
+      },
+    });
+    return new Response(stream, {
+      headers: {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache, no-transform',
+        Connection: 'keep-alive',
+        'X-Accel-Buffering': 'no',
+      },
+    });
+  });
+
   // ---------- 会话管理 ----------
 
   app.post('/api/sessions', async (c) => {
@@ -384,6 +441,9 @@ async function collectMainContext(pctx, c, cfg, opts = {}) {
     rounds = (await loadLib()).parseSessionJsonl(sessionPath);
   }
   const roundCount = rounds.length;
+  // 半截快照检测：主对话最后一条是用户消息、助手尚未回复（助手还在生成中）
+  const lastRound = rounds[roundCount - 1];
+  const pending = !!(lastRound && lastRound.user && !lastRound.assistant);
   let reference = '';
   if (rounds.length) {
     if (cfg.contextMode === 'full') {
@@ -406,7 +466,8 @@ async function collectMainContext(pctx, c, cfg, opts = {}) {
     roundCount,
     viaApi,
     reference,
-    stats: { rounds: roundCount, mode: cfg.contextMode, viaApi, file: path.basename(sessionPath), ...(apiError ? { apiError } : {}) },
+    pending,
+    stats: { rounds: roundCount, mode: cfg.contextMode, viaApi, pending, file: path.basename(sessionPath), ...(apiError ? { apiError } : {}) },
   };
 }
 
@@ -414,7 +475,7 @@ async function mainSessionInfo(pctx, c) {
   const cfg = await readConfig(pctx);
   const info = await collectMainContext(pctx, c, cfg).catch(() => ({ ok: false }));
   if (!info.ok) return { found: false, rounds: 0, mode: cfg.contextMode };
-  return { found: true, rounds: info.roundCount, mode: cfg.contextMode, viaApi: info.viaApi, ...(info.stats?.apiError ? { apiError: info.stats.apiError } : {}) };
+  return { found: true, rounds: info.roundCount, mode: cfg.contextMode, viaApi: info.viaApi, pending: !!info.pending, ...(info.stats?.apiError ? { apiError: info.stats.apiError } : {}) };
 }
 
 // 绑定的 agent：主对话 agent（人格由官方管道注入）。失败返回 undefined（系统默认）。

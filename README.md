@@ -93,6 +93,6 @@ side-chat/
 升级后检查：
 
 1. 升级 Hana 后打开侧边栏「辅助对话」，若显示「加载失败」；
-2. 检查 `bundle\index.js` 中 `jot` 集合（`new Set([...])`）是否含 `"token"`（原版备份在 `bundle\index.js.bak-20260815`）；
+2. 检查 `bundle\index.js` 中 `jot` 集合（`new Set([...])`）是否含 `"token"`（原版备份在 `artifacts\server\0.446.6-win32-x64\bundle\index.js.bak-20260815`，升级后被覆盖时从这里找回原样再改）；
 3. 若不含，重新加入 `"token"` 并重启 Hana；
 4. 建议向 OpenHanako 仓库（liliMozi/openhanako）上报该契约 bug，争取官方修复。

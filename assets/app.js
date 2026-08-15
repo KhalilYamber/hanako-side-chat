@@ -89,10 +89,38 @@ function renderMainBar(main) {
     label.textContent = '主对话：未找到';
     return;
   }
-  dot.className = 'ok';
   const rounds = main.rounds ?? 0;
   const mode = main.mode ?? (state.config?.contextMode ?? 'windowed');
-  label.textContent = `主对话：${rounds} 轮 · ${mode === 'full' ? '全量' : `最近 ${state.config?.windowSize ?? 30} 轮+摘要`}`;
+  const pending = main.pending;
+  dot.className = pending ? 'warn' : 'ok';
+  const base = `主对话：${rounds} 轮 · ${mode === 'full' ? '全量' : `最近 ${state.config?.windowSize ?? 30} 轮+摘要`}`;
+  label.textContent = pending ? `${base}（正在回复中…）` : base;
+}
+
+// 轻量刷新主对话指示（SSE 收到事件或轮询兜底时调用）
+async function refreshMain() {
+  const res = await api('/api/state');
+  if (!res.ok) return;
+  if (res.config) state.config = res.config;
+  if (res.main) renderMainBar(res.main);
+}
+
+// 主对话实时同步：SSE 长连接，主对话有新消息/回复完成即刷新
+function connectMainEvents() {
+  if (typeof EventSource === 'undefined') return;
+  const q = [];
+  if (TOKEN) q.push(`token=${encodeURIComponent(TOKEN)}`);
+  if (AGENT_ID) q.push(`agentId=${encodeURIComponent(AGENT_ID)}`);
+  const url = `${API_BASE}/api/main-events${q.length ? '?' + q.join('&') : ''}`;
+  const es = new EventSource(url);
+  es.onmessage = (e) => {
+    try {
+      const msg = JSON.parse(e.data);
+      if (msg.type === 'main-changed') refreshMain();
+    } catch { /* 忽略非 JSON 心跳 */ }
+  };
+  // EventSource 断线会自动重连，无需手动处理
+  es.onerror = () => { /* 交给 EventSource 自身重连 */ };
 }
 
 async function loadState() {
@@ -173,6 +201,9 @@ async function send() {
     addMsg('sys', res.error ?? '发送失败');
   } else {
     renderMainBar(res.mainStats);
+    if (res.mainStats?.pending) {
+      addMsg('sys', '提示：主对话正在回复中，参考上下文可能不完整，稍候会自动同步~');
+    }
   }
   // 拉取回复（轮询直至出现新助手消息）
   await pollReply(state.currentId, Date.now());
@@ -368,7 +399,9 @@ $('set-context-mode').onchange = () => $('wrap-window').style.display = $('set-c
 (async function init() {
   await loadState();
   if (state.sessions.length) await openSession(state.sessions[0].id);
-  // 定时轻量刷新状态（新消息自动同步由后端发送时完成）
+  // 主对话实时同步：SSE 长连接（主对话有新消息/回复完成即刷新）
+  connectMainEvents();
+  // 兜底轮询：SSE 失效时仍能定期刷新状态
   timer = setInterval(async () => {
     const res = await api('/api/state');
     if (res.ok) {
@@ -378,5 +411,5 @@ $('set-context-mode').onchange = () => $('wrap-window').style.display = $('set-c
         renderSessionSelect();
       }
     }
-  }, 15000);
+  }, 5000);
 })();
