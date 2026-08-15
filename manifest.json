@@ -1,0 +1,67 @@
+{
+  "manifestVersion": 1,
+  "id": "side-chat",
+  "name": "Side Chat 辅助对话",
+  "version": "0.1.0",
+  "description": "侧边栏辅助对话：纯 LLM 问答面板，上下文 = 当前 agent 人格 + 主对话一问一答与思考过程（参考上下文，自动同步）+ 自身对话历史，两套上下文严格分离。无任何电脑操作能力。供应商支持从主设置一键导入。",
+  "author": "Khalil",
+  "minAppVersion": "0.82.0",
+  "trust": "full-access",
+  "activationEvents": ["onStartup"],
+  "capabilities": [
+    "session",
+    "agent",
+    "model.sample"
+  ],
+  "ui": {
+    "hostCapabilities": ["clipboard.writeText"]
+  },
+  "contributes": {
+    "widget": {
+      "title": "辅助对话",
+      "route": "/widget",
+      "icon": "<svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\"><path d=\"M4 6h16v10H8l-4 4z\"/><path d=\"M8 10h8M8 13h5\"/></svg>"
+    },
+    "page": {
+      "title": "辅助对话（页面）",
+      "route": "/page",
+      "icon": "<svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\"><path d=\"M4 6h16v10H8l-4 4z\"/><path d=\"M8 10h8M8 13h5\"/></svg>"
+    },
+    "configuration": {
+      "title": "Side Chat 辅助对话",
+      "properties": {
+        "providerImportJson": {
+          "type": "string",
+          "default": "",
+          "title": "导入的供应商配置（JSON，一键导入自动填充）",
+          "description": "从主设置一键导入的供应商快照（仅 baseUrl、协议、模型列表，不含任何密钥）。"
+        },
+        "model": {
+          "type": "string",
+          "default": "",
+          "title": "辅助对话模型",
+          "description": "留空时使用导入供应商列表里第一个可用模型。"
+        },
+        "contextMode": {
+          "type": "string",
+          "enum": ["windowed", "full"],
+          "default": "windowed",
+          "title": "主对话参考上下文策略",
+          "description": "windowed=只带最近 N 轮+旧轮摘要（省 token）；full=全量带上。效果不满意可随时切换。"
+        },
+        "windowSize": {
+          "type": "number",
+          "default": 30,
+          "title": "最近 N 轮（windowed 模式）",
+          "description": "参考上下文保留的最近问答轮数，再往前压缩成摘要。"
+        },
+        "includeThinking": {
+          "type": "boolean",
+          "default": true,
+          "title": "包含主对话思考过程",
+          "description": "把主对话的思考过程（reasoning）一并注入参考上下文。"
+        }
+      }
+    }
+  }
+}
