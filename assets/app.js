@@ -286,6 +286,58 @@ function connectMainEvents() {
   es.onerror = () => { /* 交给 EventSource 自身重连 */ };
 }
 
+// ---------- 主对话切换重定位（relocate 机制，2026-08-16） ----------
+// 背景：widget iframe 是 agent 级共享实例，同一 agent 下切换主对话时 iframe 不重载、
+// host 也不通知切换事件，前端 state 全部保留；lastMainPath 只被 SSE 消息事件更新，
+// 切到新主对话后若它暂无新消息，lastMainPath 会停留在旧值，列表/参考上下文锁死在旧主对话。
+// relocate 用「面板激活/周期」信号补足：让后端忽略 lastMainPath，按最近活跃 public 主会话
+// （mtime）重新定位。两个信号互补：SSE=最近消息，relocate=最近活跃纠正。
+
+// 触发防抖：focus 与 visibilitychange 常成对触发，5 秒内只执行一次（时间戳记录）
+let lastRelocateAt = 0;
+const RELOCATE_DEBOUNCE_MS = 5000;
+
+// 主对话重定位：调 /api/state?relocate=1（api() 会自动带 lastMainPath，后端 relocate
+// 模式会忽略它）。返回是否发生了切换：是 → 更新 lastMainPath 并跑一轮轮询刷新
+// 列表/指示，调用方（20 秒周期轮询）据此跳过本轮正常轮询，避免重复刷新 mainbar。
+async function relocateMain() {
+  const now = Date.now();
+  if (now - lastRelocateAt < RELOCATE_DEBOUNCE_MS) return false; // 防抖：跳过
+  lastRelocateAt = now;
+  const res = await api('/api/state?relocate=1');
+  if (!res.ok) return false;
+  const newPath = res.main?.sessionPath ?? null;
+  if (!newPath || newPath === state.lastMainPath) return false; // 未发生切换
+  // 主会话已切换：更新追踪路径后跑一轮正常轮询（id 序列对比 + renderBindHint），
+  // 列表过滤随新路径自动收敛，select 变化由轮询对比刷新
+  state.lastMainPath = newPath;
+  await pollStateOnce();
+  return true;
+}
+
+// 单轮状态轮询：拉 /api/state 并同步主对话指示与列表
+// （由 5 秒兜底轮询与 relocateMain 共用，避免两处重复逻辑）
+async function pollStateOnce() {
+  const res = await api('/api/state');
+  if (!res.ok) return;
+  state.mainPath = res.main?.sessionPath ?? null;
+  renderMainBar(res.main);
+  // 内容对比：id 序列 + unbound 标记（同长度不同内容/绑定状态变化也要刷新，
+  // 惰性绑定后 unbound 标记消失即靠它收敛）
+  const idSeq = (list) => (list ?? []).map((s) => `${s.id}:${s.unbound ? 'u' : 'b'}`).join(',');
+  if (idSeq(res.sessions) !== idSeq(state.sessions)) {
+    state.sessions = res.sessions;
+    renderSessionSelect();
+    // 会话失配回退：列表刷新后当前选中会话可能已被隔离过滤/删除（主对话切换/隔离），
+    // select 会显示第一个 option 但 currentId 仍是旧值，后续发消息/删除会打到不可见会话。
+    // 自动回退到新列表第一个（空列表时 openSession(null) 走空态）。
+    if (state.currentId && !state.sessions.some((s) => s.id === state.currentId)) {
+      await openSession(state.sessions[0]?.id ?? null);
+    }
+  }
+  renderBindHint();
+}
+
 async function loadState() {
   const res = await api('/api/state');
   if (!res.ok) {
@@ -687,6 +739,13 @@ $('btn-back-list').onclick = showRoundList;
 $('btn-close-preview').onclick = () => $('preview-panel').classList.add('hidden');
 $('set-context-mode').onchange = () => $('wrap-window').style.display = $('set-context-mode').value === 'windowed' ? 'block' : 'none';
 
+// 主对话切换激活触发：窗口重新聚焦/重新可见时立即重定位主会话
+// （防抖在 relocateMain 内部：focus 与 visibilitychange 常成对触发，5 秒内只执行一次）
+window.addEventListener('focus', relocateMain);
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) relocateMain();
+});
+
 // ---------- 启动 ----------
 
 (async function init() {
@@ -694,26 +753,15 @@ $('set-context-mode').onchange = () => $('wrap-window').style.display = $('set-c
   if (state.sessions.length) await openSession(state.sessions[0].id);
   // 主对话实时同步：SSE 长连接（主对话有新消息/回复完成即刷新）
   connectMainEvents();
-  // 兜底轮询：SSE 失效时仍能定期刷新状态
+  // 兜底轮询：SSE 失效时仍能定期刷新状态（每轮调 pollStateOnce）
+  // 周期重定位：每第 4 轮（约 20 秒）先 relocateMain 纠正主会话定位，再走正常轮询。
+  // relocate 发生切换时会自带一轮刷新，返回 true 则本轮跳过正常轮询（避免重复刷新）。
+  let pollCount = 0;
   timer = setInterval(async () => {
-    const res = await api('/api/state');
-    if (res.ok) {
-      state.mainPath = res.main?.sessionPath ?? null;
-      renderMainBar(res.main);
-      // 内容对比：id 序列 + unbound 标记（同长度不同内容/绑定状态变化也要刷新，
-      // 惰性绑定后 unbound 标记消失即靠它收敛）
-      const idSeq = (list) => (list ?? []).map((s) => `${s.id}:${s.unbound ? 'u' : 'b'}`).join(',');
-      if (idSeq(res.sessions) !== idSeq(state.sessions)) {
-        state.sessions = res.sessions;
-        renderSessionSelect();
-        // 会话失配回退：列表刷新后当前选中会话可能已被隔离过滤/删除（主对话切换/隔离），
-        // select 会显示第一个 option 但 currentId 仍是旧值，后续发消息/删除会打到不可见会话。
-        // 自动回退到新列表第一个（空列表时 openSession(null) 走空态）。
-        if (state.currentId && !state.sessions.some((s) => s.id === state.currentId)) {
-          await openSession(state.sessions[0]?.id ?? null);
-        }
-      }
-      renderBindHint();
+    pollCount++;
+    if (pollCount % 4 === 0) {
+      if (await relocateMain()) return;
     }
+    await pollStateOnce();
   }, 5000);
 })();

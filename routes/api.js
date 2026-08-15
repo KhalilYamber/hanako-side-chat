@@ -23,7 +23,10 @@ export default function registerSideChatRoutes(app, ctx) {
   app.get('/api/state', async (c) => {
     const cfg = await readConfig(pctx);
     const sessions = (await loadStore()).listSessions(pctx.dataDir, requestAgentId(c));
-    const main = await mainSessionInfo(pctx, c);
+    // relocate=1：重定位模式（主对话切换纠正）。前端 lastMainPath 只被 SSE 消息事件更新，
+    // 切主对话后若新主对话暂无消息会停留在旧值；relocate 让后端忽略 mainPath，
+    // 改按「最近活跃 public 主会话（mtime）」重新定位，返回路径供前端更新追踪。
+    const main = await mainSessionInfo(pctx, c, { relocate: c.req.query('relocate') === '1' });
     // 隔离过滤（树枝-树叶模型）：有当前主会话时按归属过滤，无效绑定标记 unbound 透给前端
     const visible = main?.sessionPath ? filterSessionsByMain(pctx, sessions, main.sessionPath) : sessions;
     return c.json({ ok: true, config: cfg, sessions: visible, main });
@@ -485,12 +488,13 @@ async function readConfig(ctx) {
 //   1. query 显式 sessionPath/sessionId（调试，同样白名单校验）
 //   2. agentId → session:list 取最近修改的 public 会话
 //   3. mtime 兜底（仅当官方通道不可用）
-async function resolveMainSessionPath(pctx, c) {
+// skipMainPath=true（relocate 重定位）时跳过 0，直接走 1/2/3（mtime 系重新定位）。
+async function resolveMainSessionPath(pctx, c, skipMainPath = false) {
   const agentId = c.req.query('agentId') || '';
   const tryPath = (p) => (isAgentSessionPath(pctx, p, agentId) ? p : null);
   // 0. 前端 SSE 追踪的最近活跃主会话（最精确）
   const mp = c.req.query('mainPath') || '';
-  if (mp) {
+  if (!skipMainPath && mp) {
     if (isAgentSessionPath(pctx, mp, agentId)) {
       // 追加 public 校验：辅助会话（plugin_private）路径同样能过白名单，必须排除，
       // 否则 SSE 污染会让主会话定位指向辅助会话自身（参考上下文自噬）
@@ -655,11 +659,13 @@ async function resolveContextSessionPath(pctx, c, entry) {
 // opts.skipSummary=true 时跳过旧轮摘要（状态接口用，零 LLM 调用）
 async function collectMainContext(pctx, c, cfg, opts = {}) {
   // 归属优先：调用方显式给出会话路径（辅助会话 boundMain）且通过白名单时直接用，
-  // 否则走 resolveMainSessionPath 原解析逻辑
+  // 否则走 resolveMainSessionPath 原解析逻辑。
+  // opts.relocate=true（重定位模式）：显式 sessionPath 仍归属优先，其余情况跳过前端
+  // mainPath，按 mtime 系兜底重新定位（主对话切换纠正）。
   const sessionPath =
     opts.sessionPath && isAgentSessionPath(pctx, opts.sessionPath, requestAgentId(c))
       ? opts.sessionPath
-      : await resolveMainSessionPath(pctx, c);
+      : await resolveMainSessionPath(pctx, c, !!opts.relocate);
   if (!sessionPath) {
     return { ok: false, error: '未找到主会话', stats: { rounds: 0, mode: cfg.contextMode }, rounds: [], reference: '' };
   }
@@ -744,17 +750,21 @@ function getStateCache() {
   return globalThis.__sideChat.stateCache;
 }
 
-async function mainSessionInfo(pctx, c) {
+// 主会话信息（状态接口）：优先官方 history API，兜底 JSONL；带 10 秒短 TTL 缓存。
+// opts.relocate=true（重定位模式）：不读缓存（要「当前时刻」的 mtime 定位，缓存可能返回
+// 切换前的旧路径），也不写缓存（请求携带的 mainPath 仍是旧值，写进去会污染正常键；
+// 下一轮正常请求带新 lastMainPath 会命中新键，无需回填）。
+async function mainSessionInfo(pctx, c, opts = {}) {
   const cfg = await readConfig(pctx);
   const cache = getStateCache();
   const key = `${requestAgentId(c)}|${c.req.query('mainPath') || ''}|${cfg.contextMode}`;
   const now = Date.now();
-  if (cache) {
+  if (cache && !opts.relocate) {
     const hit = cache.get(key);
     if (hit && now - hit.ts < STATE_CACHE_TTL_MS) return hit.value;
   }
   // 状态接口零 LLM：跳过旧轮摘要（轮数/pending/stats 照常返回）
-  const info = await collectMainContext(pctx, c, cfg, { skipSummary: true }).catch(() => ({ ok: false }));
+  const info = await collectMainContext(pctx, c, cfg, { skipSummary: true, relocate: !!opts.relocate }).catch(() => ({ ok: false }));
   let result;
   if (!info.ok) {
     result = { found: false, rounds: 0, mode: cfg.contextMode };
@@ -770,7 +780,7 @@ async function mainSessionInfo(pctx, c) {
       ...(info.stats?.apiError ? { apiError: info.stats.apiError } : {}),
     };
   }
-  if (cache) {
+  if (cache && !opts.relocate) {
     // 顺带清理过期条目（键随 agent/主会话切换累积，量小直接遍历）
     for (const [k, v] of cache) {
       if (now - v.ts >= STATE_CACHE_TTL_MS) cache.delete(k);
