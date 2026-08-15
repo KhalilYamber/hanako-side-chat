@@ -245,7 +245,8 @@ export default function registerSideChatRoutes(app, ctx) {
     return c.json({ ok: true, mainStats });
   });
 
-  app.delete('/api/sessions/:id', async (c) => {
+  // 删除会话：POST 端点为主（iframe 环境兼容性最好），DELETE 保留兼容
+  const removeSessionHandler = async (c) => {
     const id = c.req.param('id');
     const entry = (await loadStore()).getSession(pctx.dataDir, id);
     if (!entry) return c.json({ ok: true });
@@ -255,7 +256,9 @@ export default function registerSideChatRoutes(app, ctx) {
     }
     (await loadStore()).removeSession(pctx.dataDir, id);
     return c.json({ ok: true });
-  });
+  };
+  app.post('/api/sessions/:id/delete', removeSessionHandler);
+  app.delete('/api/sessions/:id', removeSessionHandler);
 
   // ---------- 主对话参考上下文预览 ----------
 

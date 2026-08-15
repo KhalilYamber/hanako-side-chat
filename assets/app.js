@@ -235,10 +235,24 @@ async function delSession() {
     addMsg('sys', '没有可删除的会话');
     return;
   }
-  const entry = state.sessions.find((s) => s.id === id);
-  const title = entry?.title ?? '当前会话';
-  if (!window.confirm(`确定删除「${title}」？此操作不可恢复。`)) return;
-  const res = await api(`/api/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  const btn = $('btn-del');
+  // 两态确认：iframe 环境里 window.confirm 会被 host 静默禁用（点删除没反应），
+  // 改用「第一次点击变确认态，3 秒内再点才执行」的内联确认。
+  if (!btn.dataset.arming) {
+    btn.dataset.arming = '1';
+    btn.textContent = '确认？';
+    btn.title = '再次点击确认删除';
+    setTimeout(() => {
+      delete btn.dataset.arming;
+      btn.textContent = '🗑';
+      btn.title = '删除当前会话';
+    }, 3000);
+    return;
+  }
+  delete btn.dataset.arming;
+  btn.textContent = '🗑';
+  btn.title = '删除当前会话';
+  const res = await api(`/api/sessions/${encodeURIComponent(id)}/delete`, { method: 'POST', body: JSON.stringify({}) });
   if (!res.ok) {
     addMsg('sys', res.error ?? '删除失败');
     return;
