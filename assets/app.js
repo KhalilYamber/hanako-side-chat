@@ -17,6 +17,9 @@ const API_BASE = '/api/plugins/side-chat';
 const URL_PARAMS = new URLSearchParams(location.search);
 const TOKEN = URL_PARAMS.get('token') || '';
 const AGENT_ID = URL_PARAMS.get('agentId') || '';
+// sessionPath 来自 host 补丁注入的 iframe URL，是「当前打开主对话」的真实路径，
+// 优先级高于任何猜测值（后端 resolveMainSessionPath 第一个校验它）
+const SESSION_PATH = URL_PARAMS.get('sessionPath') || '';
 
 let state = { sessions: [], config: null, currentId: null, busy: false, creating: false, deleting: false, currentHasMessages: false, lastMainPath: null, mainPath: null };
 let timer = null;
@@ -26,6 +29,8 @@ async function api(path, opts = {}) {
   const extra = [];
   if (TOKEN) extra.push(`token=${encodeURIComponent(TOKEN)}`);
   if (AGENT_ID) extra.push(`agentId=${encodeURIComponent(AGENT_ID)}`);
+  // sessionPath：host 补丁注入的「当前打开主对话」真实路径，优先级最高
+  if (SESSION_PATH) extra.push(`sessionPath=${encodeURIComponent(SESSION_PATH)}`);
   // 透传「最近活跃主会话」路径：后端 resolveMainSessionPath 优先用它定位参考上下文
   // （SSE 追踪到才带；null 时后端走 agent 最近会话兜底，行为与旧版一致）
   if (state.lastMainPath) extra.push(`mainPath=${encodeURIComponent(state.lastMainPath)}`);

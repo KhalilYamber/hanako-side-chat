@@ -484,15 +484,23 @@ async function readConfig(ctx) {
 // 从 widget 请求里解析主会话身份（T3 修正版 + 2026-08-16 主会话绑定增强）
 // host 打开 widget 的 iframe URL 会带 agentId query（X-Hana-Plugin-Surface-Session 头
 // 在转发到插件路由前已被 server 剥离，不可用）。主会话解析优先级：
-//   0. 前端透传的 mainPath（SSE 事件实时追踪的「最近活跃主会话」，白名单校验）
-//   1. query 显式 sessionPath/sessionId（调试，同样白名单校验）
-//   2. agentId → session:list 取最近修改的 public 会话
-//   3. mtime 兜底（仅当官方通道不可用）
-// skipMainPath=true（relocate 重定位）时跳过 0，直接走 1/2/3（mtime 系重新定位）。
+//   0. query 显式 sessionPath（host 补丁注入的「当前打开主对话」真实路径，白名单校验）
+//   1. 前端透传的 mainPath（SSE 事件实时追踪的「最近活跃主会话」，白名单 + public 校验）
+//   2. query 显式 sessionId/session（调试，走首行扫描兜底）
+//   3. agentId → session:list 取最近修改的 public 会话
+//   4. mtime 兜底（仅当官方通道不可用）
+// skipMainPath=true（relocate 重定位）时跳过 1，直接走 2/3/4（mtime 系重新定位）。
 async function resolveMainSessionPath(pctx, c, skipMainPath = false) {
   const agentId = c.req.query('agentId') || '';
   const tryPath = (p) => (isAgentSessionPath(pctx, p, agentId) ? p : null);
-  // 0. 前端 SSE 追踪的最近活跃主会话（最精确）
+  // 0. host 补丁注入的 sessionPath（iframe URL 携带的「当前打开主对话」真实路径），最优先
+  const sp = c.req.query('sessionPath') || '';
+  if (sp && sp.includes('.jsonl')) {
+    const ok = tryPath(sp);
+    if (ok) return ok;
+    // 白名单不过：忽略，继续走后续兜底
+  }
+  // 1. 前端 SSE 追踪的最近活跃主会话（次精确）
   const mp = c.req.query('mainPath') || '';
   if (!skipMainPath && mp) {
     if (isAgentSessionPath(pctx, mp, agentId)) {
@@ -503,38 +511,32 @@ async function resolveMainSessionPath(pctx, c, skipMainPath = false) {
     }
     // 非法/非 public：忽略，继续走后续兜底
   }
-  // 1. query 里显式给 sessionPath/sessionId（调试或前端透传）
-  const q = c.req.query('sessionPath') || c.req.query('sessionId') || c.req.query('session') || '';
+  // 2. query 显式 sessionId/session（调试：非路径形式的会话 id，走首行扫描兜底）
+  const q = c.req.query('sessionId') || c.req.query('session') || '';
   if (q) {
-    if (q.includes('.jsonl')) {
-      const ok = tryPath(q);
-      if (ok) return ok;
-    } else {
-      // hint 是 sessionId：扫描各会话文件首行匹配（兜底）
-      try {
-        const root = (await loadLib()).agentsRoot(pctx);
-        if (fs.existsSync(root)) {
-          for (const agentDir of fs.readdirSync(root)) {
-            const sessDir = path.join(root, agentDir, 'sessions');
-            if (!fs.existsSync(sessDir)) continue;
-            for (const f of fs.readdirSync(sessDir)) {
-              if (!f.endsWith('.jsonl')) continue;
-              const p = path.join(sessDir, f);
-              try {
-                const first = fs.readFileSync(p, 'utf8').split(/\r?\n/)[0];
-                if (first && first.includes(q)) return p;
-              } catch {
-                // 跳过
-              }
+    try {
+      const root = (await loadLib()).agentsRoot(pctx);
+      if (fs.existsSync(root)) {
+        for (const agentDir of fs.readdirSync(root)) {
+          const sessDir = path.join(root, agentDir, 'sessions');
+          if (!fs.existsSync(sessDir)) continue;
+          for (const f of fs.readdirSync(sessDir)) {
+            if (!f.endsWith('.jsonl')) continue;
+            const p = path.join(sessDir, f);
+            try {
+              const first = fs.readFileSync(p, 'utf8').split(/\r?\n/)[0];
+              if (first && first.includes(q)) return p;
+            } catch {
+              // 跳过
             }
           }
         }
-      } catch {
-        // 忽略
       }
+    } catch {
+      // 忽略
     }
   }
-  // 2. agentId → 官方 session:list，取最近修改的 public 会话（主对话）
+  // 3. agentId → 官方 session:list，取最近修改的 public 会话（主对话）
   if (agentId) {
     try {
       const res = await pctx.bus.request('session:list', { agentId });
@@ -549,7 +551,7 @@ async function resolveMainSessionPath(pctx, c, skipMainPath = false) {
       // 继续走文件兜底
     }
   }
-  // 3. mtime 兜底（仅当官方通道不可用时）
+  // 4. mtime 兜底（仅当官方通道不可用时）
   return (await loadLib()).findMainSessionFile(pctx, null);
 }
 
