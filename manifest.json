@@ -2,7 +2,7 @@
   "manifestVersion": 1,
   "id": "side-chat",
   "name": "Side Chat 辅助对话",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "侧边栏辅助对话：纯 LLM 问答面板，上下文 = 当前 agent 人格 + 主对话一问一答与思考过程（参考上下文，自动同步）+ 自身对话历史，两套上下文严格分离。无任何电脑操作能力。供应商支持从主设置一键导入。",
   "author": "Khalil",
   "minAppVersion": "0.82.0",
