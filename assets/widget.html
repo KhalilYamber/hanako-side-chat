@@ -10,7 +10,7 @@
     // 且 host 有 5 秒超时，所以这里用 inline 脚本在 HTML 解析时立即发送，不依赖 app.js 的加载。
     try { window.parent.postMessage({ type: "ready" }, "*"); } catch (e) {}
   </script>
-  <link rel="stylesheet" href="/api/plugins/side-chat/assets/widget.css?v=7">
+  <link rel="stylesheet" href="/api/plugins/side-chat/assets/widget.css?v=8">
 </head>
 <body data-surface="widget">
   <div id="app">
@@ -75,6 +75,6 @@
     </div>
   </div>
 
-  <script src="/api/plugins/side-chat/assets/app.js?v=12"></script>
+  <script src="/api/plugins/side-chat/assets/app.js?v=13"></script>
 </body>
 </html>

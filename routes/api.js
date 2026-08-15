@@ -558,13 +558,14 @@ async function resolveBoundAgent(pctx, c) {
 function normalizeHistory(res) {
   const list = res?.messages ?? (Array.isArray(res) ? res : null);
   if (!list) return [];
-  // 过滤空 assistant 消息（流式分段产物），避免 UI 空气泡
+  // 过滤空 assistant 消息（流式分段产物），避免 UI 空气泡；透传 thinking 供思考块渲染
   return list
     .map((m) => ({
       role: m?.role ?? 'unknown',
       text: typeof m?.content === 'string' ? m.content : (typeof m?.text === 'string' ? m.text : ''),
+      thinking: typeof m?.thinking === 'string' ? m.thinking : '',
     }))
-    .filter((m) => (m.role === 'assistant' ? (m.text ?? '').trim() !== '' : true));
+    .filter((m) => (m.role === 'assistant' ? (m.text ?? '').trim() !== '' || (m.thinking ?? '').trim() !== '' : true));
 }
 
 function readMainProviderMeta(pctx) {

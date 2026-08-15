@@ -126,6 +126,54 @@ function addMsg(role, text) {
   $('messages').scrollTop = $('messages').scrollHeight;
 }
 
+// 渲染一条 assistant 消息：思考块（💭，点击折叠/展开）+ 正文。
+// dataset.seen 存正文文本，供 pollReply 增量对比；dataset.think 存思考文本。
+function addAssistantMsg(msg) {
+  const wrap = document.createElement('div');
+  wrap.className = 'msg assistant';
+  fillAssistantMsg(wrap, msg);
+  $('messages').appendChild(wrap);
+  $('messages').scrollTop = $('messages').scrollHeight;
+  return wrap;
+}
+
+// 就地更新已有 assistant 块（thinking/text 增长时用，避免重复追加）
+function updateAssistantMsg(wrap, msg) {
+  fillAssistantMsg(wrap, msg);
+  $('messages').scrollTop = $('messages').scrollHeight;
+}
+
+function fillAssistantMsg(wrap, msg) {
+  const think = (msg.thinking ?? '').trim();
+  const text = (msg.text ?? '').trim();
+  let t = wrap.querySelector('.think');
+  if (think) {
+    if (!t) {
+      t = document.createElement('div');
+      t.className = 'think';
+      t.title = '点击折叠/展开思考';
+      t.onclick = () => t.classList.toggle('collapsed');
+      wrap.insertBefore(t, wrap.firstChild);
+    }
+    t.textContent = `💭 ${msg.thinking}`;
+  } else if (t) {
+    t.remove();
+  }
+  let b = wrap.querySelector('.body');
+  if (text) {
+    if (!b) {
+      b = document.createElement('div');
+      b.className = 'body';
+      wrap.appendChild(b);
+    }
+    b.textContent = msg.text;
+  } else if (b) {
+    b.remove();
+  }
+  wrap.dataset.seen = msg.text ?? '';
+  wrap.dataset.think = msg.thinking ?? '';
+}
+
 function renderMainBar(main) {
   const dot = $('main-dot');
   const label = $('main-label');
@@ -199,18 +247,15 @@ async function openSession(id) {
   }
   const history = res.history ?? [];
   state.currentHasMessages = history.length > 0;
-  let lastAssistantText = null;
   for (const m of history) {
-    if (m.role === 'user' || m.role === 'assistant') {
-      addMsg(m.role, m.text ?? '');
-      if (m.role === 'assistant') lastAssistantText = m.text ?? '';
+    if (m.role === 'user') {
+      addMsg('user', m.text ?? '');
+    } else if (m.role === 'assistant') {
+      // 思考块 + 正文一起渲染（thinking 由后端 normalizeHistory 透传）
+      if ((m.text ?? '').trim() || (m.thinking ?? '').trim()) {
+        addAssistantMsg({ thinking: m.thinking ?? '', text: m.text ?? '' });
+      }
     }
-  }
-  // 给最后一条 assistant 节点标 seen，避免 pollReply 把旧回复当新回复重复渲染
-  if (lastAssistantText) {
-    const assistants = $('messages').querySelectorAll('.msg.assistant');
-    const lastEl = assistants[assistants.length - 1];
-    if (lastEl) lastEl.dataset.seen = lastAssistantText;
   }
   renderSessionSelect();
   updateNewBtn();
@@ -309,22 +354,43 @@ async function send() {
 async function pollReply(sessionId) {
   // 快照发起时的会话 id：轮询期间切换会话立即中止，避免把别的会话消息渲染进当前视图
   const startedId = sessionId;
-  for (let i = 0; i < 120; i++) {
+  // 思考中占位：最后一条不是 assistant（刚发完消息、回复尚未落盘）时先显示「思考中」
+  let placeholder = null;
+  const lastEl0 = $('messages').lastElementChild;
+  if (!lastEl0 || !lastEl0.classList.contains('assistant')) {
+    placeholder = document.createElement('div');
+    placeholder.className = 'msg sys thinking';
+    placeholder.textContent = '思考中';
+    $('messages').appendChild(placeholder);
+  }
+  let lastText = '';
+  let stableRounds = 0;
+  // 轮询等待：块级流式（host 按「思考+文本」整块落盘，逐字流式插件拿不到）。
+  // 第一个 assistant 块出现即渲染思考内容，正文增长则就地更新；连续无变化判定回复完成。
+  for (let i = 0; i < 200; i++) {
     if (state.currentId !== startedId) return;
-    await new Promise((r) => setTimeout(r, 1000));
+    await new Promise((r) => setTimeout(r, 800));
     const res = await api(`/api/sessions/${encodeURIComponent(startedId)}`);
     if (!res.ok) continue;
     const msgs = res.history ?? [];
     const last = msgs[msgs.length - 1];
-    if (last && last.role === 'assistant' && last.text) {
-      // 检查是否已渲染（避免重复）
-      const rendered = $('messages').lastElementChild;
-      if (!rendered || rendered.dataset.seen !== last.text) {
-        addMsg('assistant', last.text);
-        const lastEl = $('messages').lastElementChild;
-        lastEl.dataset.seen = last.text;
+    if (last && last.role === 'assistant' && ((last.text ?? '').trim() || (last.thinking ?? '').trim())) {
+      if (placeholder) { placeholder.remove(); placeholder = null; }
+      const think = last.thinking ?? '';
+      const text = last.text ?? '';
+      const cur = $('messages').lastElementChild;
+      if (cur && cur.classList.contains('assistant') && cur.dataset.think === think) {
+        // 同一块：正文有增长则就地更新（不重复追加）
+        if (cur.dataset.seen !== text) updateAssistantMsg(cur, { thinking: think, text });
+      } else {
+        // 新块（思考不同或上一块不是 assistant）：追加
+        addAssistantMsg({ thinking: think, text });
       }
-      return;
+      if (text.trim()) {
+        stableRounds = lastText === text ? stableRounds + 1 : 0;
+        lastText = text;
+        if (stableRounds >= 3) return; // 连续 3 轮（约 2.4s）无增长：回复已完成
+      }
     }
   }
 }

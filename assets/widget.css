@@ -1,4 +1,4 @@
-/* side-chat widget 样式：跟随 Hana 主题变量 */
+﻿/* side-chat widget 样式：跟随 Hana 主题变量 */
 * { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; }
 body {
@@ -65,3 +65,13 @@ body {
 .provider-item .models span { font-size: 11px; background: var(--bg-subtle, #eee); border-radius: 4px; padding: 1px 6px; color: var(--text-dim, #666); }
 
 #diag-output { flex: 0 0 auto; min-height: 140px; white-space: pre-wrap; background: var(--bg-subtle, #f4f4f4); padding: 10px; border-radius: 8px; font-size: 12px; overflow-y: auto; line-height: 1.6; color: var(--text, #222); }
+.msg .think {
+  font-size: 11px; line-height: 1.5; color: var(--text-dim, #888);
+  font-style: italic; white-space: pre-wrap; word-break: break-word;
+  border-left: 2px solid var(--accent, #7c6cf0); padding-left: 8px; margin-bottom: 6px;
+  cursor: pointer; max-height: 12em; overflow: hidden;
+}
+.msg .think.collapsed { max-height: 2.2em; }
+.msg.sys.thinking { color: var(--text-dim, #999); }
+.msg.sys.thinking::after { content: ''; display: inline-block; width: 1.2em; text-align: left; animation: thinkdots 1.2s steps(4) infinite; }
+@keyframes thinkdots { 0% { content: ''; } 25% { content: '.'; } 50% { content: '..'; } 75% { content: '...'; } 100% { content: ''; } }
