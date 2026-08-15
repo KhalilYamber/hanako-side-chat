@@ -63,3 +63,5 @@ body {
 .provider-item select { width: 100%; padding: 3px; border: 1px solid var(--border, #ddd); border-radius: 6px; }
 .provider-item .models { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
 .provider-item .models span { font-size: 11px; background: var(--bg-subtle, #eee); border-radius: 4px; padding: 1px 6px; color: var(--text-dim, #666); }
+
+#diag-output { flex: 1; white-space: pre-wrap; background: var(--bg-subtle, #f4f4f4); padding: 10px; border-radius: 8px; font-size: 12px; overflow-y: auto; line-height: 1.6; color: var(--text, #222); }

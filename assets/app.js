@@ -44,13 +44,38 @@ async function api(path, opts = {}) {
   }
 }
 
-// 加载阶段错误可见化：面板打开即失败时，把具体原因显示在消息区
+// 加载阶段错误可见化：面板打开即失败时，拉取诊断信息并渲染为清单（，学 DSHana 诊断思路）
 function showFatal(error) {
   $('messages').innerHTML = '';
   const el = document.createElement('div');
   el.className = 'msg sys fatal';
   el.textContent = `⚠ 初始化失败：${error}\n\n（token=${TOKEN ? '有' : '无'}，agentId=${AGENT_ID || '无'}）`;
   $('messages').appendChild(el);
+  // 失败时自动拉诊断，帮助定位根因（token 补丁 / 主会话定位等）
+  api('/api/diagnostics').then((res) => {
+    const d = document.createElement('div');
+    d.className = 'msg sys fatal';
+    d.textContent = '--- 健康自检 ---\n' + formatDiagnostics(res);
+    $('messages').appendChild(d);
+  });
+}
+
+// 把 /api/diagnostics 的返回格式化为可读文本
+function formatDiagnostics(d) {
+  if (!d || !d.ok) return '（诊断接口不可用，可能是插件未加载完成）';
+  const lines = [];
+  lines.push(`agentId：${d.agentId ? '✓ ' + d.agentId : '✗ 缺失（请从主对话重新打开面板，host 会附带 agentId）'}`);
+  const ms = d.mainSession;
+  lines.push(`主会话定位：${ms?.found ? `✓ ${ms.rounds} 轮（${ms.viaApi ? '官方通道' : '文件兑底'}${ms.pending ? '，回复中' : ''}）` : `✗ ${ms?.error ?? '未找到'}（主对话暂无内容或 agents 目录异常）`}`);
+  const hp = d.hostPatch;
+  if (hp?.status === 'pass') lines.push(`host 补丁：✓ ${hp.detail ?? '生效中'}`);
+  else if (hp?.status === 'fail') lines.push(`host 补丁：✗ ${hp.detail ?? '丢失'}（升级会覆盖 artifacts，需重新打补丁：在 bundle 的 jot 集合补回 "token"，详见 debug/check-host-patch.js）`);
+  else lines.push(`host 补丁：？ ${hp?.reason ?? '无法检测'}`);
+  const ck = d.cache;
+  lines.push(`摘要缓存：${ck?.exists ? `${ck.lastRoundCount} 轮${ck.hasSummary ? '（有摘要）' : ''}${ck.mainSessionPath ? '，主会话已绑定' : ''}` : '无（尚未生成）'}`);
+  const cf = d.config;
+  if (cf) lines.push(`配置：${cf.contextMode === 'full' ? '全量' : `最近 ${cf.windowSize} 轮+摘要`}${cf.includeThinking ? '，含思考' : ''}${cf.model ? '，模型 ' + cf.model : ''}`);
+  return lines.join('\n');
 }
 
 // ---------- 渲染 ----------
@@ -442,6 +467,15 @@ $('btn-settings').onclick = () => $('settings-panel').classList.remove('hidden')
 $('btn-close-settings').onclick = () => {
   saveSettings();
   $('settings-panel').classList.add('hidden');
+};
+$('btn-diag').onclick = async () => {
+  const out = $('diag-output');
+  out.textContent = '诊断中…';
+  out.classList.remove('hidden');
+  const res = await api('/api/diagnostics');
+  out.textContent = res.ok
+    ? formatDiagnostics(res)
+    : `诊断接口失败：${res.error ?? '未知错误'}\n（token=${TOKEN ? '有' : '无'}，agentId=${AGENT_ID || '无'}）`;
 };
 $('mainbar').onclick = async () => {
   $('preview-panel').classList.remove('hidden');

@@ -27,6 +27,46 @@ export default function registerSideChatRoutes(app, ctx) {
     return c.json({ ok: true, config: cfg, sessions, main });
   });
 
+  // ---------- 健康自检（，借鉴 DSHana 诊断思路） ----------
+
+  app.get('/api/diagnostics', async (c) => {
+    const agentId = requestAgentId(c);
+    // 主会话定位（不摘要，轻量）
+    let mainSession = { found: false, error: null };
+    try {
+      const info = await collectMainContext(pctx, c, await readConfig(pctx), { skipSummary: true });
+      mainSession = info.ok
+        ? { found: true, rounds: info.roundCount, viaApi: info.viaApi, pending: !!info.pending, file: info.sessionPath ? path.basename(info.sessionPath) : null }
+        : { found: false, error: info.error ?? '未找到主会话' };
+    } catch (e) {
+      mainSession = { found: false, error: String(e?.message ?? e) };
+    }
+    // host 补丁状态（只读 bundle，最新版本目录）
+    const home = path.dirname(path.dirname(pctx.pluginDir));
+    const patchLib = await import(`../lib/patch-check.mjs?t=${Date.now()}`).catch(() => null);
+    const hostPatch = patchLib ? patchLib.checkHostPatch(home) : { status: 'unknown', reason: 'patch-check 模块加载失败' };
+    // 摘要缓存状态（当前 agent 分域）
+    let cache = null;
+    try {
+      const lc = await loadLib();
+      cache = lc.loadCache(pctx.dataDir, agentId);
+      if (cache && typeof cache === 'object' && !Object.keys(cache).length) cache = null;
+    } catch {
+      cache = null;
+    }
+    const cfg = await readConfig(pctx);
+    return c.json({
+      ok: true,
+      agentId: agentId || null,
+      config: { contextMode: cfg.contextMode, windowSize: cfg.windowSize, includeThinking: cfg.includeThinking, model: cfg.model || null },
+      mainSession,
+      hostPatch,
+      cache: cache
+        ? { exists: true, lastRoundCount: cache.lastRoundCount ?? 0, mainSessionPath: cache.mainSessionPath ?? null, lastPending: !!cache.lastPending, hasSummary: !!(cache.summaryText ?? '') }
+        : { exists: false },
+    });
+  });
+
   // ---------- 主对话实时同步（SSE） ----------
 
   app.get('/api/main-events', (c) => {
