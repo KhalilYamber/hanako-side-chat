@@ -17,8 +17,22 @@ body {
 }
 #session-picker { flex: 1; display: flex; gap: 4px; min-width: 0; }
 #session-select { flex: 1; min-width: 0; padding: 4px 6px; border: 1px solid var(--border, #ddd); border-radius: 6px; background: var(--bg-input, #fff); color: var(--text, #222); }
-#btn-new, #btn-del, #btn-rename, #btn-settings { border: 1px solid var(--border, #ddd); border-radius: 6px; background: var(--bg-input, #fff); color: var(--text, #222); cursor: pointer; padding: 2px 8px; font-size: 14px; }
+#btn-new, #btn-settings { border: 1px solid var(--border, #ddd); border-radius: 6px; background: var(--bg-input, #fff); color: var(--text, #222); cursor: pointer; padding: 2px 8px; font-size: 14px; }
 #btn-new:disabled, #btn-del:disabled, #btn-rename:disabled { opacity: .5; cursor: default; }
+/* ：✏️/🗑 视觉组：两按钮直边紧贴（边框重叠相接、两端圆角），组内 hover 各自高亮，
+   组与 ＋（btn-new）之间用 margin 拉开明显分隔；disabled 语义沿用上方通用规则不变 */
+#btn-group { display: inline-flex; margin-left: 8px; }
+#btn-group > button {
+  border: 1px solid var(--border, #ddd); border-radius: 0;
+  background: var(--bg-input, #fff); color: var(--text, #222);
+  cursor: pointer; font-size: 14px; width: 30px; padding: 0;
+  position: relative; margin-left: -1px;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+#btn-group > button:first-child { border-radius: 6px 0 0 6px; margin-left: 0; }
+#btn-group > button:last-child { border-radius: 0 6px 6px 0; }
+#btn-group > button:hover:not(:disabled) { background: var(--bg-subtle, #f0f0f0); z-index: 1; }
+#btn-group > #btn-del:hover:not(:disabled) { background: #fdeeee; color: #e05555; }
 /* 重命名编辑条：编辑态替换 select 位置（select 隐藏），样式对齐现有控件（暗色、圆角） */
 #rename-bar { flex: 1; min-width: 0; display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
 #rename-input { flex: 1; min-width: 0; padding: 4px 6px; border: 1px solid var(--border, #ddd); border-radius: 6px; background: var(--bg-input, #fff); color: var(--text, #222); font: inherit; }
@@ -61,6 +75,23 @@ body {
 #btn-send:disabled { opacity: .5; cursor: wait; }
 
 .hidden { display: none !important; }
+/* ：会话右键菜单：垂直列表浮层，fixed 定位（JS 控制在视口内自动收拢），样式对齐现有暗色控件 */
+#ctx-menu {
+  position: fixed; z-index: 100; min-width: 132px;
+  background: var(--bg-card, #fff);
+  border: 1px solid var(--border, #ddd); border-radius: 8px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, .18);
+  padding: 4px; display: flex; flex-direction: column; gap: 2px;
+}
+#ctx-menu button {
+  display: block; width: 100%; text-align: left;
+  border: none; background: transparent; color: var(--text, #222);
+  font-family: inherit; font-size: 13px; padding: 6px 10px;
+  border-radius: 6px; cursor: pointer; white-space: nowrap;
+}
+#ctx-menu button:hover { background: var(--bg-subtle, #f0f0f0); }
+#ctx-menu button.danger:hover { background: #fdeeee; color: #e05555; }
+#ctx-menu button.danger.armed { color: #e05555; }
 #settings-panel, #preview-panel {
   position: fixed; inset: 0; z-index: 10;
   background: var(--bg-card, #fff);

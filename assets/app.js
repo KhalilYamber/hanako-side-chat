@@ -366,6 +366,7 @@ async function loadState() {
 let openSeq = 0;
 
 async function openSession(id) {
+  closeCtxMenu(); // ：会话切换（含轮询/删除/新建等一切路径）时关闭右键菜单
   // 防御：列表刷新后 currentId 指向的会话可能已被隔离过滤/删除（主对话切换/隔离导致），
   // select 会显示第一个 option 但 currentId 仍是旧值，后续发消息/删除会打到不可见会话。
   // 这里统一回退：id 不在列表且列表非空 → 打开第一个；列表为空 → 空态。
@@ -787,10 +788,61 @@ function showRoundList() {
 
 // ---------- 事件绑定 ----------
 
+// ---------- 会话右键菜单（） ----------
+// 右键会话下拉弹出「重命名/删除」两项，复用现有 startRename / delSession（删除与顶栏 🗑 共享两态确认状态）。
+// 无当前会话或重命名编辑态不弹；点击菜单外 / Esc / 会话切换 / 再次右键 → 关闭。
+const ctxMenu = $('ctx-menu');
+const ctxMenuDel = $('ctx-menu-del');
+
+// 可弹出条件：非编辑态且有有效当前会话（与 updateRenameBtn 的 has 判定口径一致）
+function canOpenCtxMenu() {
+  if (renameSessionId !== null) return false; // 编辑态锁
+  return !!state.currentId && state.sessions.some((s) => s.id === state.currentId);
+}
+
+function openCtxMenu(x, y) {
+  // 删除项与顶栏 🗑 共享 dataset.arming：按钮处于 3 秒确认窗口内时菜单项同步显示「确认删除？」
+  const armed = !!$('btn-del').dataset.arming;
+  ctxMenuDel.textContent = armed ? '确认删除？' : '🗑 删除';
+  ctxMenuDel.classList.toggle('armed', armed);
+  ctxMenu.classList.remove('hidden');
+  // 先显示再量尺寸：超出视口（面板）时自动收拢进可视区，四周留 4px 边距
+  ctxMenu.style.left = Math.max(4, Math.min(x, window.innerWidth - ctxMenu.offsetWidth - 4)) + 'px';
+  ctxMenu.style.top = Math.max(4, Math.min(y, window.innerHeight - ctxMenu.offsetHeight - 4)) + 'px';
+}
+
+function closeCtxMenu() {
+  ctxMenu.classList.add('hidden');
+}
+
+// 右键会话下拉（select 及其内部）弹菜单；右键 ＋/✏️/🗑/⚙ 等按钮不弹
+$('session-picker').addEventListener('contextmenu', (e) => {
+  const sel = $('session-select');
+  if (e.target !== sel && !sel.contains(e.target)) return;
+  e.preventDefault();               // 防浏览器原生菜单
+  closeCtxMenu();                   // 再次右键：先关旧菜单
+  if (!canOpenCtxMenu()) return;    // 无会话 / 编辑态：不弹
+  openCtxMenu(e.clientX, e.clientY);
+});
+// 菜单打开期间：任何位置的右键都拦截原生菜单（捕获阶段先于上面冒泡处理器执行）
+document.addEventListener('contextmenu', (e) => {
+  if (!ctxMenu.classList.contains('hidden')) e.preventDefault();
+}, true);
+// 点击菜单外关闭；菜单项点击命中 contains 跳过，由项自身 onclick 关闭
+document.addEventListener('click', (e) => {
+  if (!ctxMenu.classList.contains('hidden') && !ctxMenu.contains(e.target)) closeCtxMenu();
+});
+// Esc 关闭（编辑态中菜单不弹，与 rename-input 的 Esc 退出编辑互不干扰）
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') closeCtxMenu();
+});
+$('ctx-menu-rename').onclick = () => { closeCtxMenu(); startRename(); };
+$('ctx-menu-del').onclick = () => { closeCtxMenu(); delSession(); }; // 两态确认：首次点击只 arm 顶栏按钮，3 秒内再点才执行
+
 $('btn-new').onclick = newSession;
 $('btn-del').onclick = delSession;
 $('btn-send').onclick = send;
-$('session-select').onchange = (e) => openSession(e.target.value);
+$('session-select').onchange = (e) => { closeCtxMenu(); openSession(e.target.value); }; // ：会话切换关菜单
 $('btn-rename').onclick = startRename;
 $('btn-rename-ok').onclick = saveRename;
 $('btn-rename-cancel').onclick = exitRename;

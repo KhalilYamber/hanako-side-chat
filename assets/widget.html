@@ -10,7 +10,7 @@
     // 且 host 有 5 秒超时，所以这里用 inline 脚本在 HTML 解析时立即发送，不依赖 app.js 的加载。
     try { window.parent.postMessage({ type: "ready" }, "*"); } catch (e) {}
   </script>
-  <link rel="stylesheet" href="/api/plugins/side-chat/assets/widget.css?v=11">
+  <link rel="stylesheet" href="/api/plugins/side-chat/assets/widget.css?v=12">
 </head>
 <body data-surface="widget">
   <div id="app">
@@ -26,8 +26,11 @@
           <div id="rename-error" class="rename-error hidden"></div>
         </div>
         <button id="btn-new" title="新建会话">＋</button>
-        <button id="btn-rename" title="重命名当前会话">✏️</button>
-        <button id="btn-del" title="删除当前会话">🗑</button>
+        <!-- ：✏️/🗑 紧贴成视觉组（直边相接、两端圆角），组内各自响应 hover，与 ＋ 之间留明显分隔 -->
+        <span id="btn-group" class="btn-group">
+          <button id="btn-rename" title="重命名当前会话">✏️</button>
+          <button id="btn-del" title="删除当前会话">🗑</button>
+        </span>
       </div>
       <button id="btn-settings" title="设置">⚙</button>
     </header>
@@ -52,6 +55,12 @@
       <textarea id="input" rows="2" placeholder="在此提问（参考上下文会自动带入主对话内容）"></textarea>
       <button id="btn-send">发送</button>
     </footer>
+  </div>
+
+  <!-- ：会话右键菜单：右键会话下拉弹出（fixed 浮层，视口内自动收拢），仅「重命名/删除」两项 -->
+  <div id="ctx-menu" class="hidden">
+    <button id="ctx-menu-rename">✏️ 重命名</button>
+    <button id="ctx-menu-del" class="danger">🗑 删除</button>
   </div>
 
   <!-- 设置面板 -->
@@ -89,6 +98,6 @@
     </div>
   </div>
 
-  <script src="/api/plugins/side-chat/assets/app.js?v=19"></script>
+  <script src="/api/plugins/side-chat/assets/app.js?v=20"></script>
 </body>
 </html>
