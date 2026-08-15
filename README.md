@@ -78,3 +78,21 @@ side-chat/
 - **模块缓存坑**：插件 reload 时 Node 对静态 import 的子模块缓存不失效，`lib/*.js` 必须用带时间戳的动态 import 加载。
 - **前端认证兜底**：真实环境走 hana_session cookie；无 cookie 时从页面 URL 提取 `token` 参数拼进 fetch。
 - **插件配置**：`ctx.config.get()` 读全部、`ctx.config.setMany(obj)` 批量写（受 manifest schema 校验）、`ctx.config.set(key, value)` 单键写。供应商快照存于 manifest 声明的 `providerImportJson` 字段。
+
+## 已知限制
+
+- **附件像素级理解未实现**：用户发过的图片目前以文本引用（`[SessionFile]` + `[attached_image: 路径]`）进入参考上下文，辅助对话看不到图的像素内容。`session:send` 不支持多模态图片注入，此需求仅满足文本层，像素级为后续项。
+- **「不动电脑」靠提示词约束**：会话绑定主对话 agent 会继承其工具集；Hana 无「完全禁用工具」机制（核心工具不可禁用、`session:create` 无工具控制字段）。当前靠 boundary 强约束（「绝不调用任何工具」）压制，实测诱导测试通过，但属概率性服从，非硬隔离。
+- **主会话 = 最近活跃会话**：拿不到「当前打开」的主会话 id，参考上下文定位为该 agent 最近修改的 public 会话，非严格实时当前会话。
+- **agent 级归属**：辅助会话按主对话 agent 隔离（维护者域/空老师域各自独立）。session 级（同一 agent 下多个主会话之间）隔离依赖 host 提供主会话 id，暂未实现。
+
+## host 补丁升级检查（重要）
+
+本插件真机可用依赖一处 Hana server 侧补丁：`artifacts\server\0.446.6-win32-x64\bundle\index.js` 的 `jot` 集合加入 `"token"`，修复 widget iframe 的 ticket 校验。**Hana 升级会覆盖 artifacts 目录，导致补丁丢失、widget 复现「加载失败」**。
+
+升级后检查：
+
+1. 升级 Hana 后打开侧边栏「辅助对话」，若显示「加载失败」；
+2. 检查 `bundle\index.js` 中 `jot` 集合（`new Set([...])`）是否含 `"token"`（原版备份在 `bundle\index.js.bak-20260815`）；
+3. 若不含，重新加入 `"token"` 并重启 Hana；
+4. 建议向 OpenHanako 仓库（liliMozi/openhanako）上报该契约 bug，争取官方修复。
