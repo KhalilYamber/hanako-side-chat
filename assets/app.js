@@ -86,10 +86,12 @@ function formatDiagnostics(d) {
 function renderSessionSelect() {
   const sel = $('session-select');
   sel.innerHTML = '';
-  for (const s of state.sessions) {
+  // 未绑定（旧数据）分组排后：正常在前、未绑定在后，组内保持原有 updatedAt 倒序
+  const ordered = [...state.sessions].sort((a, b) => Number(!!a.unbound) - Number(!!b.unbound));
+  for (const s of ordered) {
     const opt = document.createElement('option');
     opt.value = s.id;
-    opt.textContent = s.title;
+    opt.textContent = s.unbound ? `（未绑定）${s.title}` : s.title;
     if (s.id === state.currentId) opt.selected = true;
     sel.appendChild(opt);
   }
@@ -306,6 +308,15 @@ async function openSession(id) {
     addMsg('sys', res.error ?? '加载失败');
     updateNewBtn();
     return;
+  }
+  // 惰性归属：后端打开时可能刚把旧数据自动绑定到当前主会话，同步本地条目
+  // （去掉 unbound 标记、写入 boundMain，select 标题与提示条立即反映新状态）
+  if (res.session?.boundMain) {
+    const entry = state.sessions.find((s) => s.id === id);
+    if (entry) {
+      entry.boundMain = res.session.boundMain;
+      delete entry.unbound;
+    }
   }
   const history = res.history ?? [];
   state.currentHasMessages = history.length > 0;
@@ -649,7 +660,10 @@ $('set-context-mode').onchange = () => $('wrap-window').style.display = $('set-c
     if (res.ok) {
       state.mainPath = res.main?.sessionPath ?? null;
       renderMainBar(res.main);
-      if (res.sessions?.length !== state.sessions.length) {
+      // 内容对比：id 序列 + unbound 标记（同长度不同内容/绑定状态变化也要刷新，
+      // 惰性绑定后 unbound 标记消失即靠它收敛）
+      const idSeq = (list) => (list ?? []).map((s) => `${s.id}:${s.unbound ? 'u' : 'b'}`).join(',');
+      if (idSeq(res.sessions) !== idSeq(state.sessions)) {
         state.sessions = res.sessions;
         renderSessionSelect();
       }

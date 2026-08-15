@@ -24,7 +24,9 @@ export default function registerSideChatRoutes(app, ctx) {
     const cfg = await readConfig(pctx);
     const sessions = (await loadStore()).listSessions(pctx.dataDir, requestAgentId(c));
     const main = await mainSessionInfo(pctx, c);
-    return c.json({ ok: true, config: cfg, sessions, main });
+    // 隔离过滤（树枝-树叶模型）：有当前主会话时按归属过滤，无效绑定标记 unbound 透给前端
+    const visible = main?.sessionPath ? filterSessionsByMain(pctx, sessions, main.sessionPath) : sessions;
+    return c.json({ ok: true, config: cfg, sessions: visible, main });
   });
 
   // ---------- 健康自检（，借鉴 DSHana 诊断思路） ----------
@@ -174,7 +176,11 @@ export default function registerSideChatRoutes(app, ctx) {
   });
 
   app.get('/api/sessions', async (c) => {
-    return c.json({ ok: true, sessions: (await loadStore()).listSessions(pctx.dataDir, requestAgentId(c)) });
+    const sessions = (await loadStore()).listSessions(pctx.dataDir, requestAgentId(c));
+    // 与 /api/state 一致：按当前主会话隔离过滤（mainSessionInfo 走 skipSummary，零 LLM）
+    const main = await mainSessionInfo(pctx, c);
+    const visible = main?.sessionPath ? filterSessionsByMain(pctx, sessions, main.sessionPath) : sessions;
+    return c.json({ ok: true, sessions: visible });
   });
 
   app.get('/api/sessions/:id', async (c) => {
@@ -185,6 +191,8 @@ export default function registerSideChatRoutes(app, ctx) {
     if (!isOwnedBy(entry, requestAgentId(c))) {
       return c.json({ ok: false, error: '会话不属于当前主对话' });
     }
+    // 惰性归属：未绑定/绑定无效的旧数据，打开时自动绑定到当前主会话（用户无感）
+    await lazyBindUnbound(pctx, c, entry);
     let history = [];
     try {
       const res = await pctx.bus.request('session:history', { sessionPath: entry.sessionPath, limit: 200 });
@@ -206,10 +214,15 @@ export default function registerSideChatRoutes(app, ctx) {
     if (!isOwnedBy(entry, requestAgentId(c))) {
       return c.json({ ok: false, error: '会话不属于当前主对话' });
     }
+    // 惰性归属：发消息前未绑定/绑定无效的旧数据自动绑定到当前主会话（与打开详情行为一致）
+    await lazyBindUnbound(pctx, c, entry);
 
     // 1. 采集主对话参考上下文（官方通道）
+    // 归属优先：参考上下文来自 boundMain 归属的主会话（树叶认树枝），无效才回退原解析逻辑
     const cfg = await readConfig(pctx);
-    const mainInfo = await collectMainContext(pctx, c, cfg);
+    const mainInfo = await collectMainContext(pctx, c, cfg, {
+      sessionPath: await resolveContextSessionPath(pctx, c, entry),
+    });
     const reference = mainInfo.reference;
     const mainStats = mainInfo.stats;
 
@@ -528,10 +541,71 @@ function isAgentSessionPath(pctx, p, agentId) {
   }
 }
 
+// ---------- 主会话隔离（树枝-树叶模型） ----------
+
+// 路径规范化：大小写与 \/ 分隔符统一（与 isAgentSessionPath 里的 norm 写法一致）
+function normSessionPath(p) {
+  return typeof p === 'string' ? p.replace(/\\/g, '/').toLowerCase() : '';
+}
+
+// boundMain 有效性：白名单路径校验通过 + 指向的文件仍存在。
+// 主对话会话被删除后 boundMain 即失效，归未绑定组，下次使用惰性重绑。
+function isBoundMainValid(pctx, boundMain, agentId) {
+  if (!isAgentSessionPath(pctx, boundMain, agentId)) return false;
+  try {
+    return fs.existsSync(boundMain);
+  } catch {
+    return false;
+  }
+}
+
+// 列表过滤：当前主会话 M 时——
+//   boundMain === M → 正常组；boundMain 空/无效 → 未绑定组（unbound: true）；
+//   boundMain 为其它主会话 → 隔离（不返回）。
+// 无 M（主会话定位失败）→ 全量返回（兼容旧行为）。纯本地判断，零 LLM。
+function filterSessionsByMain(pctx, sessions, mainPath) {
+  if (!mainPath || !Array.isArray(sessions)) return sessions ?? [];
+  const m = normSessionPath(mainPath);
+  const out = [];
+  for (const s of sessions) {
+    if (isBoundMainValid(pctx, s?.boundMain, s?.agentId)) {
+      if (normSessionPath(s.boundMain) === m) out.push(s);
+      // 绑定到其它主会话：不返回（树枝-树叶隔离）
+    } else {
+      // 未绑定或绑定已失效（文件被删）：可见但标记，前端显示「（未绑定）」
+      out.push({ ...s, unbound: true });
+    }
+  }
+  return out;
+}
+
+// 惰性归属：未绑定/绑定无效的会话，自动绑定到当前解析的主会话路径（旧数据自然归位，用户无感）。
+// entry 就地更新 boundMain，调用方后续直接使用新绑定。
+async function lazyBindUnbound(pctx, c, entry) {
+  if (!entry || isBoundMainValid(pctx, entry.boundMain, entry.agentId)) return false;
+  const mainPath = await resolveMainSessionPath(pctx, c).catch(() => null);
+  if (!mainPath) return false;
+  entry.boundMain = mainPath;
+  (await loadStore()).upsertSession(pctx.dataDir, { id: entry.id, boundMain: mainPath });
+  return true;
+}
+
+// 参考上下文主会话定位（归属优先）：boundMain 有效则用它，无效/为空才走原解析逻辑
+// （resolveMainSessionPath：mainPath query → sessionId → agent 最近会话 → mtime）。
+async function resolveContextSessionPath(pctx, c, entry) {
+  if (entry && isBoundMainValid(pctx, entry.boundMain, entry.agentId)) return entry.boundMain;
+  return resolveMainSessionPath(pctx, c);
+}
+
 // 主会话信息：优先官方 history API，兜底 JSONL
 // opts.skipSummary=true 时跳过旧轮摘要（状态接口用，零 LLM 调用）
 async function collectMainContext(pctx, c, cfg, opts = {}) {
-  const sessionPath = await resolveMainSessionPath(pctx, c);
+  // 归属优先：调用方显式给出会话路径（辅助会话 boundMain）且通过白名单时直接用，
+  // 否则走 resolveMainSessionPath 原解析逻辑
+  const sessionPath =
+    opts.sessionPath && isAgentSessionPath(pctx, opts.sessionPath, requestAgentId(c))
+      ? opts.sessionPath
+      : await resolveMainSessionPath(pctx, c);
   if (!sessionPath) {
     return { ok: false, error: '未找到主会话', stats: { rounds: 0, mode: cfg.contextMode }, rounds: [], reference: '' };
   }
