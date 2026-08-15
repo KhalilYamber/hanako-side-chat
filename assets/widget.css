@@ -17,7 +17,13 @@ body {
 }
 #session-picker { flex: 1; display: flex; gap: 4px; min-width: 0; }
 #session-select { flex: 1; min-width: 0; padding: 4px 6px; border: 1px solid var(--border, #ddd); border-radius: 6px; background: var(--bg-input, #fff); color: var(--text, #222); }
-#btn-new, #btn-del, #btn-settings { border: 1px solid var(--border, #ddd); border-radius: 6px; background: var(--bg-input, #fff); color: var(--text, #222); cursor: pointer; padding: 2px 8px; font-size: 14px; }
+#btn-new, #btn-del, #btn-rename, #btn-settings { border: 1px solid var(--border, #ddd); border-radius: 6px; background: var(--bg-input, #fff); color: var(--text, #222); cursor: pointer; padding: 2px 8px; font-size: 14px; }
+#btn-new:disabled, #btn-del:disabled, #btn-rename:disabled { opacity: .5; cursor: default; }
+/* 重命名编辑条：编辑态替换 select 位置（select 隐藏），样式对齐现有控件（暗色、圆角） */
+#rename-bar { flex: 1; min-width: 0; display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+#rename-input { flex: 1; min-width: 0; padding: 4px 6px; border: 1px solid var(--border, #ddd); border-radius: 6px; background: var(--bg-input, #fff); color: var(--text, #222); font: inherit; }
+.rename-btn { border: 1px solid var(--border, #ddd); border-radius: 6px; background: var(--bg-input, #fff); color: var(--text, #222); cursor: pointer; padding: 2px 8px; font-size: 13px; }
+.rename-error { flex-basis: 100%; font-size: 11px; color: #e05555; }
 #mainbar {
   display: flex; align-items: center; gap: 6px;
   padding: 3px 10px; cursor: pointer;

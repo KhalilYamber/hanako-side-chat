@@ -10,7 +10,7 @@
     // 且 host 有 5 秒超时，所以这里用 inline 脚本在 HTML 解析时立即发送，不依赖 app.js 的加载。
     try { window.parent.postMessage({ type: "ready" }, "*"); } catch (e) {}
   </script>
-  <link rel="stylesheet" href="/api/plugins/side-chat/assets/widget.css?v=10">
+  <link rel="stylesheet" href="/api/plugins/side-chat/assets/widget.css?v=11">
 </head>
 <body data-surface="widget">
   <div id="app">
@@ -18,7 +18,15 @@
     <header id="topbar">
       <div id="session-picker">
         <select id="session-select"></select>
+        <!-- 重命名编辑条：编辑态隐藏 select 并显示此条（含输入框 + 保存/取消 + 就地错误提示） -->
+        <div id="rename-bar" class="hidden">
+          <input id="rename-input" class="rename-input" placeholder="输入新标题…">
+          <button id="btn-rename-ok" class="rename-btn" title="保存">✓</button>
+          <button id="btn-rename-cancel" class="rename-btn" title="取消">✕</button>
+          <div id="rename-error" class="rename-error hidden"></div>
+        </div>
         <button id="btn-new" title="新建会话">＋</button>
+        <button id="btn-rename" title="重命名当前会话">✏️</button>
         <button id="btn-del" title="删除当前会话">🗑</button>
       </div>
       <button id="btn-settings" title="设置">⚙</button>
@@ -81,6 +89,6 @@
     </div>
   </div>
 
-  <script src="/api/plugins/side-chat/assets/app.js?v=18"></script>
+  <script src="/api/plugins/side-chat/assets/app.js?v=19"></script>
 </body>
 </html>

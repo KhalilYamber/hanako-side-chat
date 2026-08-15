@@ -115,6 +115,7 @@ function renderSessionSelect() {
     opt.textContent = '（暂无会话，点 ＋ 新建）';
     sel.appendChild(opt);
   }
+  updateRenameBtn(); // 列表重渲染时同步「重命名」按钮态（无会话时 disabled）
 }
 
 // 统一刷新「新建会话」按钮态：
@@ -123,6 +124,7 @@ function renderSessionSelect() {
 // - 当前选中会话有内容：允许新建。
 function updateNewBtn() {
   const btn = $('btn-new');
+  if (renameSessionId !== null) { btn.disabled = true; return; } // 编辑态锁定（防轮询等路径解锁）
   if (!state.sessions.length) {
     btn.disabled = false;
     btn.title = '新建会话';
@@ -484,6 +486,87 @@ async function delSession() {
   }
 }
 
+// ---------- 会话重命名（） ----------
+// 编辑态：rename-bar 替换 select（select 隐藏即不可交互），新建/删除/重命名按钮禁用，
+// 防止切换会话导致保存到错误 id。Enter 保存 / Esc 取消 / 按钮双支持；
+// 失焦无改动退出不保存，有改动保留编辑态（防误触丢输入）。
+// iframe 环境 confirm/prompt 均被禁用，错误用编辑条内红字提示（3 秒自动消失）。
+let renameSessionId = null;  // 进入编辑态时的会话 id（编辑期间 currentId 可能被轮询改写，保存用此快照）
+let renameOriginal = '';     // 进入编辑态时的原标题（失焦「无改动」判定基准）
+let renameErrorTimer = null; // 红字错误提示自动消失定时器
+
+// 重命名按钮态：无当前会话或编辑态中时 disabled；列表每次重渲染时由 renderSessionSelect 同步
+function updateRenameBtn() {
+  const has = !!state.currentId && state.sessions.some((s) => s.id === state.currentId);
+  $('btn-rename').disabled = renameSessionId !== null || !has;
+}
+
+function showRenameError(msg) {
+  const err = $('rename-error');
+  err.textContent = msg;
+  err.classList.remove('hidden');
+  if (renameErrorTimer) clearTimeout(renameErrorTimer);
+  renameErrorTimer = setTimeout(() => err.classList.add('hidden'), 3000);
+}
+
+function startRename() {
+  const entry = state.sessions.find((s) => s.id === state.currentId);
+  if (!entry) return;
+  renameSessionId = entry.id;
+  renameOriginal = entry.title;
+  const input = $('rename-input');
+  input.value = entry.title;
+  $('rename-error').classList.add('hidden');
+  // 编辑态切换：select 隐藏（不可交互，等效禁用），编辑条占据其位置
+  $('session-select').classList.add('hidden');
+  $('rename-bar').classList.remove('hidden');
+  // 清理删除按钮的两态确认残留（编辑态中该按钮被禁用，恢复时不能停留在「确认？」）
+  const del = $('btn-del');
+  if (del.dataset.arming) {
+    delete del.dataset.arming;
+    del.textContent = '🗑';
+    del.title = '删除当前会话';
+  }
+  // 编辑态锁：防切换会话导致保存到错误 id
+  $('btn-new').disabled = true;
+  $('btn-del').disabled = true;
+  $('btn-rename').disabled = true;
+  input.focus();
+  input.setSelectionRange(input.value.length, input.value.length); // 光标置末尾，避免误覆盖原标题
+}
+
+function exitRename() {
+  renameSessionId = null;
+  $('rename-bar').classList.add('hidden');
+  $('session-select').classList.remove('hidden');
+  $('rename-error').classList.add('hidden');
+  if (renameErrorTimer) { clearTimeout(renameErrorTimer); renameErrorTimer = null; }
+  updateNewBtn();    // 恢复新建按钮态（空会话/无消息时保持置灰）
+  updateRenameBtn(); // 恢复重命名按钮态（无会话时 disabled）
+  $('btn-del').disabled = false;
+}
+
+async function saveRename() {
+  const id = renameSessionId;
+  const entry = state.sessions.find((s) => s.id === id);
+  if (!id || !entry) { exitRename(); return; } // 编辑期间会话被移除（隔离/删除）：安全退出
+  const title = $('rename-input').value.trim();
+  // 本地校验：与后端口径一致，不达标不发请求
+  if (!title) { showRenameError('标题不能为空'); return; }
+  if (title.length > 60) { showRenameError('标题过长（最多 60 字）'); return; }
+  const res = await api(`/api/sessions/${encodeURIComponent(id)}/rename`, {
+    method: 'POST',
+    body: JSON.stringify({ title }),
+  });
+  if (!res.ok) {
+    showRenameError(res.error ?? '重命名失败'); // 显示后端 error，不退出编辑态
+    return;
+  }
+  entry.title = res.title ?? title; // 以服务端返回为准（trim 后）
+  renderSessionSelect();            // 重渲染并保持选中（currentId 未变）；列表位置不变（不重排序）
+  exitRename();
+}
+
 async function send() {
   const input = $('input');
   const text = input.value.trim();
@@ -708,6 +791,20 @@ $('btn-new').onclick = newSession;
 $('btn-del').onclick = delSession;
 $('btn-send').onclick = send;
 $('session-select').onchange = (e) => openSession(e.target.value);
+$('btn-rename').onclick = startRename;
+$('btn-rename-ok').onclick = saveRename;
+$('btn-rename-cancel').onclick = exitRename;
+$('rename-input').addEventListener('keydown', (e) => {
+  if (e.isComposing) return; // 输入法选词中的 Enter 不触发保存
+  if (e.key === 'Enter') { e.preventDefault(); saveRename(); }
+  else if (e.key === 'Escape') { e.preventDefault(); exitRename(); }
+});
+$('rename-input').addEventListener('blur', (e) => {
+  // 点击 ✓/✕：焦点目标在编辑条内，交给对应 click 处理，这里不动
+  if (e.relatedTarget && $('rename-bar').contains(e.relatedTarget)) return;
+  // 失焦且无改动：退出编辑态不保存；有改动：保留编辑态（防误触丢输入）
+  if ($('rename-input').value === renameOriginal) exitRename();
+});
 $('input').addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault();

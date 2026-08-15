@@ -370,6 +370,23 @@ export default function registerSideChatRoutes(app, ctx) {
     return c.json({ ok: true, boundMain: mainPath });
   });
 
+  // 重命名会话：只改索引 title；不动 updatedAt（重命名不该把会话顶到列表最前）
+  app.post('/api/sessions/:id/rename', async (c) => {
+    const id = c.req.param('id');
+    const body = await c.req.json().catch(() => ({}));
+    const entry = (await loadStore()).getSession(pctx.dataDir, id);
+    if (!entry) return c.json({ ok: false, error: '会话不存在' });
+    // 归属校验：跨域改名拦截（同删除/绑定）
+    if (!isOwnedBy(entry, requestAgentId(c))) {
+      return c.json({ ok: false, error: '会话不属于当前主对话' });
+    }
+    const title = typeof body?.title === 'string' ? body.title.trim() : '';
+    if (!title) return c.json({ ok: false, error: '标题不能为空' });
+    if (title.length > 60) return c.json({ ok: false, error: '标题过长（最多 60 字）' });
+    (await loadStore()).upsertSession(pctx.dataDir, { id, title });
+    return c.json({ ok: true, title });
+  });
+
   // 删除会话：POST 端点为主（iframe 环境兼容性最好），DELETE 保留兼容
   const removeSessionHandler = async (c) => {
     const id = c.req.param('id');
