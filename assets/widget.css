@@ -69,9 +69,9 @@ body {
   font-size: 11px; line-height: 1.5; color: var(--text-dim, #888);
   font-style: italic; white-space: pre-wrap; word-break: break-word;
   border-left: 2px solid var(--accent, #7c6cf0); padding-left: 8px; margin-bottom: 6px;
-  cursor: pointer; max-height: 12em; overflow: hidden;
+  cursor: pointer; max-height: 16em; overflow-y: auto;
 }
-.msg .think.collapsed { max-height: 2.2em; }
+.msg .think.collapsed { max-height: 2.2em; overflow: hidden; }
 .msg.sys.thinking { color: var(--text-dim, #999); }
 .msg.sys.thinking::after { content: ''; display: inline-block; width: 1.2em; text-align: left; animation: thinkdots 1.2s steps(4) infinite; }
 @keyframes thinkdots { 0% { content: ''; } 25% { content: '.'; } 50% { content: '..'; } 75% { content: '...'; } 100% { content: ''; } }

@@ -150,12 +150,16 @@ function fillAssistantMsg(wrap, msg) {
   if (think) {
     if (!t) {
       t = document.createElement('div');
-      t.className = 'think';
-      t.title = '点击折叠/展开思考';
-      t.onclick = () => t.classList.toggle('collapsed');
+      t.className = 'think collapsed'; // 默认折叠：只显示占位提示，点击展开完整思考
+      t.title = '点击展开/收起思考';
+      t.onclick = () => {
+        t.classList.toggle('collapsed');
+        refreshThink(t);
+      };
       wrap.insertBefore(t, wrap.firstChild);
     }
-    t.textContent = `💭 ${msg.thinking}`;
+    t.dataset.full = msg.thinking;
+    refreshThink(t);
   } else if (t) {
     t.remove();
   }
@@ -172,6 +176,15 @@ function fillAssistantMsg(wrap, msg) {
   }
   wrap.dataset.seen = msg.text ?? '';
   wrap.dataset.think = msg.thinking ?? '';
+}
+
+// 思考块显示刷新：折叠态显示占位提示，展开态显示完整思考文本
+function refreshThink(t) {
+  if (t.classList.contains('collapsed')) {
+    t.textContent = '💭 思考内容（点击展开）';
+  } else {
+    t.textContent = `💭 ${t.dataset.full ?? ''}`;
+  }
 }
 
 function renderMainBar(main) {
