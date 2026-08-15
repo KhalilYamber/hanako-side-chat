@@ -18,7 +18,7 @@ const URL_PARAMS = new URLSearchParams(location.search);
 const TOKEN = URL_PARAMS.get('token') || '';
 const AGENT_ID = URL_PARAMS.get('agentId') || '';
 
-let state = { sessions: [], config: null, currentId: null, busy: false, currentHasMessages: false };
+let state = { sessions: [], config: null, currentId: null, busy: false, currentHasMessages: false, lastMainPath: null, mainPath: null };
 let timer = null;
 
 async function api(path, opts = {}) {
@@ -26,6 +26,9 @@ async function api(path, opts = {}) {
   const extra = [];
   if (TOKEN) extra.push(`token=${encodeURIComponent(TOKEN)}`);
   if (AGENT_ID) extra.push(`agentId=${encodeURIComponent(AGENT_ID)}`);
+  // 透传「最近活跃主会话」路径：后端 resolveMainSessionPath 优先用它定位参考上下文
+  // （SSE 追踪到才带；null 时后端走 agent 最近会话兜底，行为与旧版一致）
+  if (state.lastMainPath) extra.push(`mainPath=${encodeURIComponent(state.lastMainPath)}`);
   const url = API_BASE + path + (extra.length ? `${sep}${extra.join('&')}` : '');
   let res;
   try {
@@ -208,7 +211,46 @@ async function refreshMain() {
   const res = await api('/api/state');
   if (!res.ok) return;
   if (res.config) state.config = res.config;
-  if (res.main) renderMainBar(res.main);
+  if (res.main) {
+    // 服务端最终解析的主会话路径：与辅助会话 boundMain 对比（提示条判定依据）
+    state.mainPath = res.main.sessionPath ?? null;
+    renderMainBar(res.main);
+  }
+  renderBindHint();
+}
+
+// 绑定提示条：当前选中会话的 boundMain 与「当前主会话」都存在且不同 → 显示，点击一键切换。
+// 相同或任一缺失（含旧数据未绑定）→ 隐藏，行为与旧版一致。
+function renderBindHint() {
+  const hint = $('bind-hint');
+  const entry = state.sessions.find((s) => s.id === state.currentId);
+  const bound = entry?.boundMain ?? null;
+  const cur = state.mainPath ?? null;
+  if (!bound || !cur || bound === cur) {
+    hint.classList.add('hidden');
+    return;
+  }
+  // 文案用文件名（去扩展名）指代绑定的主对话，完整路径太长不适合展示
+  const name = (bound.split(/[\\/]/).pop() || '主对话').replace(/\.jsonl$/i, '');
+  $('bind-hint-text').textContent = `⚠ 绑定主对话 ${name}，点击切换到当前`;
+  hint.classList.remove('hidden');
+}
+
+// 提示条点击：把当前会话绑定到「当前主会话」（POST bind），成功后更新本地条目并隐藏提示条
+async function bindToCurrent() {
+  const id = state.currentId;
+  if (!id || !state.mainPath) return;
+  const res = await api(`/api/sessions/${encodeURIComponent(id)}/bind`, {
+    method: 'POST',
+    body: JSON.stringify({ mainPath: state.mainPath }),
+  });
+  if (!res.ok) {
+    addMsg('sys', res.error ?? '切换绑定失败');
+    return;
+  }
+  const entry = state.sessions.find((s) => s.id === id);
+  if (entry) entry.boundMain = res.boundMain ?? state.mainPath;
+  renderBindHint();
 }
 
 // 主对话实时同步：SSE 长连接，主对话有新消息/回复完成即刷新
@@ -222,7 +264,11 @@ function connectMainEvents() {
   es.onmessage = (e) => {
     try {
       const msg = JSON.parse(e.data);
-      if (msg.type === 'main-changed') refreshMain();
+      if (msg.type === 'main-changed') {
+        // 追踪「最近活跃主会话」：sessionPath 存在才更新（null 时保持旧值，自然降级不报错）
+        if (msg.sessionPath) state.lastMainPath = msg.sessionPath;
+        refreshMain();
+      }
     } catch { /* 忽略非 JSON 心跳 */ }
   };
   // EventSource 断线会自动重连，无需手动处理
@@ -237,11 +283,13 @@ async function loadState() {
   }
   state.config = res.config;
   state.sessions = res.sessions ?? [];
+  state.mainPath = res.main?.sessionPath ?? null;
   renderMainBar(res.main);
   renderSessionSelect();
   fillSettings();
   renderProviders();
   updateNewBtn();
+  renderBindHint();
 }
 
 async function openSession(id) {
@@ -250,6 +298,7 @@ async function openSession(id) {
   $('messages').innerHTML = '';
   if (!id) {
     updateNewBtn();
+    renderBindHint();
     return;
   }
   const res = await api(`/api/sessions/${encodeURIComponent(id)}`);
@@ -272,6 +321,7 @@ async function openSession(id) {
   }
   renderSessionSelect();
   updateNewBtn();
+  renderBindHint();
 }
 
 // ---------- 操作 ----------
@@ -575,6 +625,12 @@ $('mainbar').onclick = async () => {
   showRoundList();
   await loadRounds();
 };
+// 绑定提示条：整条可点击切换；按钮同样触发切换（stopPropagation 防重复请求）
+$('bind-hint').onclick = bindToCurrent;
+$('btn-bind-switch').onclick = (e) => {
+  e.stopPropagation();
+  bindToCurrent();
+};
 $('btn-full-preview').onclick = showFullPreview;
 $('btn-back-list').onclick = showRoundList;
 $('btn-close-preview').onclick = () => $('preview-panel').classList.add('hidden');
@@ -591,11 +647,13 @@ $('set-context-mode').onchange = () => $('wrap-window').style.display = $('set-c
   timer = setInterval(async () => {
     const res = await api('/api/state');
     if (res.ok) {
+      state.mainPath = res.main?.sessionPath ?? null;
       renderMainBar(res.main);
       if (res.sessions?.length !== state.sessions.length) {
         state.sessions = res.sessions;
         renderSessionSelect();
       }
+      renderBindHint();
     }
   }, 5000);
 })();

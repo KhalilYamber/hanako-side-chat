@@ -1,4 +1,4 @@
-﻿/* side-chat widget 样式：跟随 Hana 主题变量 */
+/* side-chat widget 样式：跟随 Hana 主题变量 */
 * { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; }
 body {
@@ -28,6 +28,21 @@ body {
 #main-dot { width: 8px; height: 8px; border-radius: 50%; background: #bbb; }
 #main-dot.ok { background: #4caf50; }
 #main-dot.warn { background: #ff9800; }
+/* 绑定提示条：辅助会话绑定 ≠ 当前主会话时的警告提示（小号字 + 左边框 accent），整条可点击 */
+#bind-hint {
+  display: flex; align-items: center; gap: 8px;
+  padding: 4px 10px; cursor: pointer;
+  background: var(--bg-subtle, #f4f4f4);
+  border-left: 3px solid var(--accent, #7c6cf0);
+  border-bottom: 1px solid var(--border, #eee);
+  font-size: 11px; color: var(--text, #222);
+}
+#bind-hint-text { flex: 1; min-width: 0; word-break: break-all; }
+#btn-bind-switch {
+  flex: 0 0 auto; padding: 1px 8px; font-size: 11px;
+  border: 1px solid var(--accent, #7c6cf0); border-radius: 6px;
+  background: transparent; color: var(--accent, #7c6cf0); cursor: pointer;
+}
 #messages { flex: 1; overflow-y: auto; padding: 10px; display: flex; flex-direction: column; gap: 8px; }
 .msg { max-width: 92%; padding: 6px 10px; border-radius: 10px; white-space: pre-wrap; word-break: break-word; line-height: 1.5; }
 .msg.user { align-self: flex-end; background: var(--accent, #7c6cf0); color: #fff; }

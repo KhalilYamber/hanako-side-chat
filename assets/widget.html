@@ -10,7 +10,7 @@
     // 且 host 有 5 秒超时，所以这里用 inline 脚本在 HTML 解析时立即发送，不依赖 app.js 的加载。
     try { window.parent.postMessage({ type: "ready" }, "*"); } catch (e) {}
   </script>
-  <link rel="stylesheet" href="/api/plugins/side-chat/assets/widget.css?v=9">
+  <link rel="stylesheet" href="/api/plugins/side-chat/assets/widget.css?v=10">
 </head>
 <body data-surface="widget">
   <div id="app">
@@ -28,6 +28,12 @@
     <div id="mainbar" title="点击查看主对话参考上下文预览">
       <span id="main-dot"></span>
       <span id="main-label">主对话：…</span>
+    </div>
+
+    <!-- 绑定提示条：辅助会话绑定的主对话 ≠ 当前主会话时显示（renderBindHint 控制显隐），点击一键切换绑定 -->
+    <div id="bind-hint" class="hidden" title="点击切换到当前主会话">
+      <span id="bind-hint-text"></span>
+      <button id="btn-bind-switch">切换</button>
     </div>
 
     <!-- 消息区 -->
@@ -75,6 +81,6 @@
     </div>
   </div>
 
-  <script src="/api/plugins/side-chat/assets/app.js?v=14"></script>
+  <script src="/api/plugins/side-chat/assets/app.js?v=15"></script>
 </body>
 </html>
