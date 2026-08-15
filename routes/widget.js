@@ -6,11 +6,19 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-// 只允许同源的 theme.css URL，避免把任意外部地址注入页面
-function isSafeThemeCss(css) {
+// 只允许同源的 theme.css URL，避免把任意外部地址注入页面。
+// 用 URL 解析做同源校验：外部绝对/协议相对 URL 解析出的 host 与请求 host 不一致即拒绝
+// （旧实现是子串匹配，https://evil.com/api/plugins/theme.css 可绕过，REVIEW1 发现 9 残余）。
+function isSafeThemeCss(css, baseUrl) {
   if (!css || typeof css !== 'string' || css.length > 2000) return false;
-  if (!css.includes('/api/plugins/theme.css')) return false;
-  return /^(https?:\/\/[^"'<>\s]+|\/[^"'<>\s]+)$/.test(css);
+  try {
+    const u = new URL(css, baseUrl);
+    if (u.host !== new URL(baseUrl).host) return false;
+    if (u.pathname !== '/api/plugins/theme.css') return false;
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export default function registerWidgetRoutes(app, ctx) {
@@ -25,7 +33,7 @@ export default function registerWidgetRoutes(app, ctx) {
     } catch {
       return c.html('<h1>side-chat：widget 模板缺失</h1>', 500);
     }
-    if (isSafeThemeCss(css)) {
+    if (isSafeThemeCss(css, c.req.url)) {
       html = html.replace('</head>', `  <link rel="stylesheet" href="${css}">\n</head>`);
     }
     if (theme && /^[a-zA-Z0-9_-]{1,64}$/.test(theme)) {

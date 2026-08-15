@@ -76,7 +76,7 @@ export default function registerSideChatRoutes(app, ctx) {
     const signal = c.req.raw?.signal;
     const encoder = new TextEncoder();
     const stream = new ReadableStream({
-      start(controller) {
+      start: async (controller) => {
         let closed = false;
         const send = (payload) => {
           if (closed) return;
@@ -89,9 +89,27 @@ export default function registerSideChatRoutes(app, ctx) {
         // 订阅主对话会话事件：用户新消息 / 助手回复完成即推送，前端据此实时刷新参考上下文。
         // 订阅是全局的（不按 sessionPath 过滤，主对话 agent 会切换），只透传事件类型与 sessionPath，不泄露正文。
         // subscribe 回调第二参数 = sessionPath（server 契约），前端据此追踪「最近活跃主会话」。
+        // 【2026-08-16 修复】public 过滤：辅助会话（plugin_private）自身的事件也会进总线，
+        // 若透传会让前端把辅助会话当成主会话（上下文自噬、列表错乱）。故只透传 public 主会话的事件。
+        const publicSet = new Set();
+        const refreshPublic = async (force) => {
+          try {
+            const paths = await getPublicSessionPaths(pctx, force);
+            publicSet.clear();
+            for (const p of paths) publicSet.add(p);
+          } catch {
+            // 忽略，保持旧集合
+          }
+        };
+        // 先等缓存就绪再注册订阅，避免连接初期的真实事件被空集合误过滤
+        await refreshPublic(true).catch(() => {});
+        const publicTimer = setInterval(() => refreshPublic(false), 60000);
         let unsubscribe = () => {};
         try {
           unsubscribe = pctx.bus.subscribe((event, sessionPath) => {
+            if (sessionPath && !publicSet.has(normSessionPath(sessionPath))) {
+              return; // 非 public 主会话（辅助会话自身/其它）：不透传，避免污染
+            }
             send({ type: 'main-changed', eventType: event?.type ?? null, sessionPath: sessionPath || null });
           }, { types: ['message_end', 'turn_end', 'session_user_message'] });
         } catch (e) {
@@ -103,6 +121,7 @@ export default function registerSideChatRoutes(app, ctx) {
           if (closed) return;
           closed = true;
           clearInterval(heartbeat);
+          clearInterval(publicTimer);
           try {
             unsubscribe();
           } catch {
@@ -307,7 +326,8 @@ export default function registerSideChatRoutes(app, ctx) {
 
   app.get('/api/main-preview', async (c) => {
     const cfg = await readConfig(pctx);
-    const info = await collectMainContext(pctx, c, cfg, { preview: true });
+    // preview 轻量预览：跳过旧轮摘要（预览不需要 LLM，避免点开主对话条就烧一次采样）
+    const info = await collectMainContext(pctx, c, cfg, { preview: true, skipSummary: true });
     if (!info.ok) return c.json({ ok: false, error: info.error ?? '未找到主会话' });
     const rounds = info.rounds ?? [];
     const preview = (await loadLib()).buildReferenceContext(rounds.slice(-Math.min(5, cfg.windowSize || 5)), cfg);
@@ -324,7 +344,8 @@ export default function registerSideChatRoutes(app, ctx) {
 
   app.get('/api/main-rounds', async (c) => {
     const cfg = await readConfig(pctx);
-    const info = await collectMainContext(pctx, c, cfg, { preview: true });
+    // preview 轻量预览：跳过旧轮摘要（预览不需要 LLM，避免点开主对话条就烧一次采样）
+    const info = await collectMainContext(pctx, c, cfg, { preview: true, skipSummary: true });
     if (!info.ok) return c.json({ ok: false, error: info.error ?? '未找到主会话' });
     const limit = Math.min(Math.max(1, Number(c.req.query('limit')) || 20), 50);
     const all = info.rounds ?? [];
@@ -349,8 +370,13 @@ export default function registerSideChatRoutes(app, ctx) {
     const updates = {};
     for (const k of ['contextMode', 'windowSize', 'includeThinking', 'model']) {
       if (body[k] !== undefined) {
-        cfg[k] = body[k];
-        updates[k] = body[k];
+        let v = body[k];
+        // 防御：windowSize 收进 1..200（0 值会让 buildReferenceContext 的 slice(-0)=全量，
+        // 与窗口语义不符，REVIEW2 发现 8）；includeThinking 强制布尔，避免字符串真值
+        if (k === 'windowSize') v = Math.min(200, Math.max(1, Number(v) || 30));
+        if (k === 'includeThinking') v = !!v;
+        cfg[k] = v;
+        updates[k] = v;
       }
     }
     // config.set 只写单 key，多 key 用 setMany（受 manifest schema 校验）
@@ -465,9 +491,13 @@ async function resolveMainSessionPath(pctx, c) {
   // 0. 前端 SSE 追踪的最近活跃主会话（最精确）
   const mp = c.req.query('mainPath') || '';
   if (mp) {
-    const ok = tryPath(mp);
-    if (ok) return ok;
-    // 非法路径：忽略，继续走后续兜底
+    if (isAgentSessionPath(pctx, mp, agentId)) {
+      // 追加 public 校验：辅助会话（plugin_private）路径同样能过白名单，必须排除，
+      // 否则 SSE 污染会让主会话定位指向辅助会话自身（参考上下文自噬）
+      const publics = await getPublicSessionPaths(pctx);
+      if (publics.has(normSessionPath(mp))) return mp;
+    }
+    // 非法/非 public：忽略，继续走后续兜底
   }
   // 1. query 里显式给 sessionPath/sessionId（调试或前端透传）
   const q = c.req.query('sessionPath') || c.req.query('sessionId') || c.req.query('session') || '';
@@ -541,6 +571,27 @@ function isAgentSessionPath(pctx, p, agentId) {
   }
 }
 
+// public 主会话路径集合（规范化、去重）。带 60 秒全局缓存（SSE 过滤与 mainPath 校验共用）。
+// 失败时返回旧缓存或空集合：SSE 不透传（保守，走 mtime 兜底），功能降级不崩溃。
+async function getPublicSessionPaths(pctx, force = false) {
+  const g = globalThis.__sideChat;
+  const now = Date.now();
+  if (!force && g?.publicPathsCache && now - g.publicPathsCache.ts < 60000) {
+    return g.publicPathsCache.paths;
+  }
+  const paths = new Set();
+  try {
+    const res = await pctx.bus.request('session:list', {});
+    for (const s of res?.sessions ?? []) {
+      if (s && s.path && s.visibility === 'public') paths.add(normSessionPath(s.path));
+    }
+  } catch {
+    // 拉取失败：保持空集合（或旧缓存），下游降级
+  }
+  if (g) g.publicPathsCache = { ts: now, paths };
+  return paths;
+}
+
 // ---------- 主会话隔离（树枝-树叶模型） ----------
 
 // 路径规范化：大小写与 \/ 分隔符统一（与 isAgentSessionPath 里的 norm 写法一致）
@@ -586,7 +637,10 @@ async function lazyBindUnbound(pctx, c, entry) {
   const mainPath = await resolveMainSessionPath(pctx, c).catch(() => null);
   if (!mainPath) return false;
   entry.boundMain = mainPath;
-  (await loadStore()).upsertSession(pctx.dataDir, { id: entry.id, boundMain: mainPath });
+  // 归属完整化：旧数据缺 agentId 时一并补写（谁先打开归谁，REVIEW2 发现 22）
+  const agentId = requestAgentId(c) || entry.agentId;
+  if (agentId) entry.agentId = agentId;
+  (await loadStore()).upsertSession(pctx.dataDir, { id: entry.id, boundMain: mainPath, ...(agentId ? { agentId } : {}) });
   return true;
 }
 
@@ -627,7 +681,9 @@ async function collectMainContext(pctx, c, cfg, opts = {}) {
   let reference = '';
   if (rounds.length) {
     if (cfg.contextMode === 'full') {
-      reference = (await loadLib()).buildReferenceContext(rounds, cfg);
+      // full 模式全量：buildReferenceContext 默认按 windowSize 截尾，
+      // 显式放开，避免「全量」实际只剩最近 30 轮（REVIEW2 发现 2）
+      reference = (await loadLib()).buildReferenceContext(rounds, { ...cfg, windowSize: Infinity });
     } else {
       const windowSize = Math.max(1, Number(cfg.windowSize) || 30);
       const recent = rounds.slice(-windowSize);
@@ -671,21 +727,57 @@ async function collectMainContext(pctx, c, cfg, opts = {}) {
   };
 }
 
+// ---------- 主会话统计短 TTL 缓存（REVIEW2） ----------
+
+// /api/state 每 5 秒轮询 + SSE 事件刷新都会调 mainSessionInfo → collectMainContext(skipSummary)，
+// 每次都 session:history 读主对话 500 条，高频重复读浪费，这里加 10 秒短 TTL。
+// 缓存键 = agentId + mainPath query + contextMode（mode 变才失效；mainPath 变说明主对话切换）。
+// pending/轮数最多滞后 10 秒，可接受：SSE 事件也会触发前端刷新，但后端缓存 10 秒内仍复用，
+// 这是有意的节流。collectMainContext 本身（发消息路径）不走此缓存。
+const STATE_CACHE_TTL_MS = 10000;
+
+// 缓存容器挂在 globalThis.__sideChat 单例上（与 getPublicSessionPaths 的 publicPathsCache 共用一个容器）；
+// 单例不可用时（可能为 null）返回 null，调用方退化不缓存、每次重算。
+function getStateCache() {
+  if (!globalThis.__sideChat || typeof globalThis.__sideChat !== 'object') return null;
+  if (!globalThis.__sideChat.stateCache) globalThis.__sideChat.stateCache = new Map();
+  return globalThis.__sideChat.stateCache;
+}
+
 async function mainSessionInfo(pctx, c) {
   const cfg = await readConfig(pctx);
+  const cache = getStateCache();
+  const key = `${requestAgentId(c)}|${c.req.query('mainPath') || ''}|${cfg.contextMode}`;
+  const now = Date.now();
+  if (cache) {
+    const hit = cache.get(key);
+    if (hit && now - hit.ts < STATE_CACHE_TTL_MS) return hit.value;
+  }
   // 状态接口零 LLM：跳过旧轮摘要（轮数/pending/stats 照常返回）
   const info = await collectMainContext(pctx, c, cfg, { skipSummary: true }).catch(() => ({ ok: false }));
-  if (!info.ok) return { found: false, rounds: 0, mode: cfg.contextMode };
-  return {
-    found: true,
-    rounds: info.roundCount,
-    mode: cfg.contextMode,
-    viaApi: info.viaApi,
-    pending: !!info.pending,
-    // 主会话路径：前端与辅助会话的 boundMain 对比，判定是否需提示切换
-    sessionPath: info.sessionPath ?? null,
-    ...(info.stats?.apiError ? { apiError: info.stats.apiError } : {}),
-  };
+  let result;
+  if (!info.ok) {
+    result = { found: false, rounds: 0, mode: cfg.contextMode };
+  } else {
+    result = {
+      found: true,
+      rounds: info.roundCount,
+      mode: cfg.contextMode,
+      viaApi: info.viaApi,
+      pending: !!info.pending,
+      // 主会话路径：前端与辅助会话的 boundMain 对比，判定是否需提示切换
+      sessionPath: info.sessionPath ?? null,
+      ...(info.stats?.apiError ? { apiError: info.stats.apiError } : {}),
+    };
+  }
+  if (cache) {
+    // 顺带清理过期条目（键随 agent/主会话切换累积，量小直接遍历）
+    for (const [k, v] of cache) {
+      if (now - v.ts >= STATE_CACHE_TTL_MS) cache.delete(k);
+    }
+    cache.set(key, { ts: now, value: result });
+  }
+  return result;
 }
 
 // 绑定的 agent：主对话 agent（人格由官方管道注入）。失败返回 undefined（系统默认）。

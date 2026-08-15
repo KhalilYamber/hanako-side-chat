@@ -18,7 +18,7 @@ const URL_PARAMS = new URLSearchParams(location.search);
 const TOKEN = URL_PARAMS.get('token') || '';
 const AGENT_ID = URL_PARAMS.get('agentId') || '';
 
-let state = { sessions: [], config: null, currentId: null, busy: false, currentHasMessages: false, lastMainPath: null, mainPath: null };
+let state = { sessions: [], config: null, currentId: null, busy: false, creating: false, deleting: false, currentHasMessages: false, lastMainPath: null, mainPath: null };
 let timer = null;
 
 async function api(path, opts = {}) {
@@ -30,6 +30,13 @@ async function api(path, opts = {}) {
   // （SSE 追踪到才带；null 时后端走 agent 最近会话兜底，行为与旧版一致）
   if (state.lastMainPath) extra.push(`mainPath=${encodeURIComponent(state.lastMainPath)}`);
   const url = API_BASE + path + (extra.length ? `${sep}${extra.join('&')}` : '');
+  // fetch 超时兜底：网络挂起时不能让 busy/轮询永久锁死（REVIEW1 发现 16 残余，30 秒上限）
+  let abortTimer = null;
+  if (!opts.signal) {
+    const ctrl = new AbortController();
+    abortTimer = setTimeout(() => ctrl.abort(), 30000);
+    opts = { ...opts, signal: ctrl.signal };
+  }
   let res;
   try {
     res = await fetch(url, {
@@ -37,7 +44,9 @@ async function api(path, opts = {}) {
       ...opts,
     });
   } catch (e) {
-    return { ok: false, error: `网络错误：${e?.message ?? e}` };
+    return { ok: false, error: `网络错误：${e?.name === 'AbortError' ? '请求超时（30 秒）' : (e?.message ?? e)}` };
+  } finally {
+    if (abortTimer) clearTimeout(abortTimer);
   }
   try {
     return await res.json();
@@ -294,7 +303,18 @@ async function loadState() {
   renderBindHint();
 }
 
+// 会话打开请求序号：快速切换时丢弃过期响应，避免旧会话内容覆盖新视图（REVIEW1 发现 16 残余）
+let openSeq = 0;
+
 async function openSession(id) {
+  // 防御：列表刷新后 currentId 指向的会话可能已被隔离过滤/删除（主对话切换/隔离导致），
+  // select 会显示第一个 option 但 currentId 仍是旧值，后续发消息/删除会打到不可见会话。
+  // 这里统一回退：id 不在列表且列表非空 → 打开第一个；列表为空 → 空态。
+  // 其它调用路径不受影响：newSession/删除后打开的 id 一定刚写进列表，不会命中防御。
+  if (id && !state.sessions.some((s) => s.id === id)) {
+    id = state.sessions.length ? state.sessions[0].id : null;
+  }
+  const seq = ++openSeq;
   state.currentId = id;
   state.currentHasMessages = false;
   $('messages').innerHTML = '';
@@ -304,6 +324,7 @@ async function openSession(id) {
     return;
   }
   const res = await api(`/api/sessions/${encodeURIComponent(id)}`);
+  if (seq !== openSeq) return; // 已有更新的打开请求：丢弃本次过期结果
   if (!res.ok) {
     addMsg('sys', res.error ?? '加载失败');
     updateNewBtn();
@@ -338,17 +359,27 @@ async function openSession(id) {
 // ---------- 操作 ----------
 
 async function newSession() {
-  const res = await api('/api/sessions', { method: 'POST', body: JSON.stringify({}) });
-  if (!res.ok) {
-    addMsg('sys', res.error ?? '新建失败');
-    return;
+  // 创建锁：连点「＋」会并发发多个 POST，产生空壳会话（REVIEW1 发现 4 实证）
+  if (state.creating) return;
+  state.creating = true;
+  $('btn-new').disabled = true;
+  try {
+    const res = await api('/api/sessions', { method: 'POST', body: JSON.stringify({}) });
+    if (!res.ok) {
+      addMsg('sys', res.error ?? '新建失败');
+      return;
+    }
+    state.sessions = [res.session, ...state.sessions];
+    renderSessionSelect();
+    await openSession(res.session.id);
+  } finally {
+    state.creating = false;
+    updateNewBtn(); // 恢复按钮态：新会话为空时保持置灰（防连点空壳）
   }
-  state.sessions = [res.session, ...state.sessions];
-  renderSessionSelect();
-  await openSession(res.session.id);
 }
 
 async function delSession() {
+  if (state.deleting) return; // 删除请求进行中防重入（重复点击会发二次请求）
   const id = state.currentId;
   if (!id) {
     addMsg('sys', '没有可删除的会话');
@@ -371,7 +402,13 @@ async function delSession() {
   delete btn.dataset.arming;
   btn.textContent = '🗑';
   btn.title = '删除当前会话';
-  const res = await api(`/api/sessions/${encodeURIComponent(id)}/delete`, { method: 'POST', body: JSON.stringify({}) });
+  state.deleting = true;
+  let res;
+  try {
+    res = await api(`/api/sessions/${encodeURIComponent(id)}/delete`, { method: 'POST', body: JSON.stringify({}) });
+  } finally {
+    state.deleting = false;
+  }
   if (!res.ok) {
     addMsg('sys', res.error ?? '删除失败');
     return;
@@ -487,8 +524,11 @@ async function saveSettings() {
     includeThinking: $('set-thinking').checked,
   };
   const res = await api('/api/settings', { method: 'POST', body: JSON.stringify(body) });
-  if (res.ok) state.config = res.config;
-  renderMainBar(null);
+  if (!res.ok) return;
+  state.config = res.config;
+  // 设置变更后重新拉主对话信息（mode/windowSize 影响指示条文案）；
+  // 旧实现 renderMainBar(null) 会把指示条误显示为「主对话：未找到」
+  await refreshMain();
 }
 
 async function renderProviders() {
@@ -666,6 +706,12 @@ $('set-context-mode').onchange = () => $('wrap-window').style.display = $('set-c
       if (idSeq(res.sessions) !== idSeq(state.sessions)) {
         state.sessions = res.sessions;
         renderSessionSelect();
+        // 会话失配回退：列表刷新后当前选中会话可能已被隔离过滤/删除（主对话切换/隔离），
+        // select 会显示第一个 option 但 currentId 仍是旧值，后续发消息/删除会打到不可见会话。
+        // 自动回退到新列表第一个（空列表时 openSession(null) 走空态）。
+        if (state.currentId && !state.sessions.some((s) => s.id === state.currentId)) {
+          await openSession(state.sessions[0]?.id ?? null);
+        }
       }
       renderBindHint();
     }
