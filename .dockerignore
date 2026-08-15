@@ -1,0 +1,5 @@
+.git
+_trash_*/
+node_modules
+*.md
+!README.md
