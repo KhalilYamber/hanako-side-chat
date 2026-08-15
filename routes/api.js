@@ -198,11 +198,9 @@ export default function registerSideChatRoutes(app, ctx) {
 
     (await loadStore()).upsertSession(pctx.dataDir, { id, updatedAt: Date.now() });
 
-    // 5. 更新增量位置（按 agent 分缓存，避免跨域污染）
-    const cache = (await loadLib()).loadCache(pctx.dataDir, requestAgentId(c));
-    cache.lastRoundCount = mainInfo.roundCount;
-    cache.mainSessionPath = mainInfo.sessionPath ?? null;
-    (await loadLib()).saveCache(pctx.dataDir, cache, requestAgentId(c));
+    // 摘要缓存由 collectMainContext 统一维护（摘要成功即写，含 lastPending/mainSessionPath）。
+    // 这里不再重复写缓存：无条件更新 lastRoundCount 会在摘要失败时留下与 summaryText
+    // 错配的计数，导致下次误复用旧摘要（外部协作 审查发现 1 的验收补充）。
 
     return c.json({ ok: true, mainStats });
   });
@@ -424,6 +422,7 @@ async function resolveMainSessionPath(pctx, c) {
 }
 
 // 主会话信息：优先官方 history API，兜底 JSONL
+// opts.skipSummary=true 时跳过旧轮摘要（状态接口用，零 LLM 调用）
 async function collectMainContext(pctx, c, cfg, opts = {}) {
   const sessionPath = await resolveMainSessionPath(pctx, c);
   if (!sessionPath) {
@@ -453,8 +452,28 @@ async function collectMainContext(pctx, c, cfg, opts = {}) {
       const recent = rounds.slice(-windowSize);
       const old = rounds.slice(0, Math.max(0, rounds.length - windowSize));
       reference = (await loadLib()).buildReferenceContext(recent, cfg);
-      if (old.length) {
-        const summary = await (await loadLib()).summarizeOld(pctx, old).catch(() => null);
+      if (old.length && !opts.skipSummary) {
+        // 摘要缓存复用：同主会话、轮数未回退、pending 状态一致才可复用，否则重新摘要
+        const cache = (await loadLib()).loadCache(pctx.dataDir, requestAgentId(c));
+        const cacheOk =
+          cache.mainSessionPath === sessionPath &&
+          cache.lastRoundCount > 0 &&
+          cache.lastRoundCount <= roundCount &&
+          cache.lastPending === !!pending;
+        let summary = cacheOk && cache.lastRoundCount === roundCount ? cache.summaryText || null : null;
+        if (!summary) {
+          summary = await (await loadLib()).summarizeOld(pctx, old).catch(() => null);
+          if (summary) {
+            // 摘要完成即写缓存（含 pending 状态），不等发送成功
+            (await loadLib()).saveCache(pctx.dataDir, {
+              lastRoundCount: roundCount,
+              summaryText: summary,
+              mainSessionPath: sessionPath,
+              lastPending: !!pending,
+            }, requestAgentId(c));
+          }
+          // 摘要失败：降级为不带摘要，不写坏缓存
+        }
         if (summary) reference = `【主对话早期轮次摘要】\n${summary}\n\n${reference}`;
       }
     }
@@ -473,7 +492,8 @@ async function collectMainContext(pctx, c, cfg, opts = {}) {
 
 async function mainSessionInfo(pctx, c) {
   const cfg = await readConfig(pctx);
-  const info = await collectMainContext(pctx, c, cfg).catch(() => ({ ok: false }));
+  // 状态接口零 LLM：跳过旧轮摘要（轮数/pending/stats 照常返回）
+  const info = await collectMainContext(pctx, c, cfg, { skipSummary: true }).catch(() => ({ ok: false }));
   if (!info.ok) return { found: false, rounds: 0, mode: cfg.contextMode };
   return { found: true, rounds: info.roundCount, mode: cfg.contextMode, viaApi: info.viaApi, pending: !!info.pending, ...(info.stats?.apiError ? { apiError: info.stats.apiError } : {}) };
 }
