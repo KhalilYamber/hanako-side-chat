@@ -18,7 +18,7 @@ const URL_PARAMS = new URLSearchParams(location.search);
 const TOKEN = URL_PARAMS.get('token') || '';
 const AGENT_ID = URL_PARAMS.get('agentId') || '';
 
-let state = { sessions: [], config: null, currentId: null, busy: false };
+let state = { sessions: [], config: null, currentId: null, busy: false, currentHasMessages: false };
 let timer = null;
 
 async function api(path, opts = {}) {
@@ -71,6 +71,26 @@ function renderSessionSelect() {
     opt.textContent = '（暂无会话，点 ＋ 新建）';
     sel.appendChild(opt);
   }
+}
+
+// 统一刷新「新建会话」按钮态：
+// - 无任何会话：允许建第一个；
+// - 当前选中会话为空对话（0 条消息）：置灰，防止连点产生空壳会话；
+// - 当前选中会话有内容：允许新建。
+function updateNewBtn() {
+  const btn = $('btn-new');
+  if (!state.sessions.length) {
+    btn.disabled = false;
+    btn.title = '新建会话';
+    return;
+  }
+  if (!state.currentHasMessages) {
+    btn.disabled = true;
+    btn.title = '当前会话还没有内容，聊几句后再开新会话';
+    return;
+  }
+  btn.disabled = false;
+  btn.title = '新建会话';
 }
 
 function addMsg(role, text) {
@@ -135,21 +155,40 @@ async function loadState() {
   renderSessionSelect();
   fillSettings();
   renderProviders();
+  updateNewBtn();
 }
 
 async function openSession(id) {
   state.currentId = id;
+  state.currentHasMessages = false;
   $('messages').innerHTML = '';
-  if (!id) return;
+  if (!id) {
+    updateNewBtn();
+    return;
+  }
   const res = await api(`/api/sessions/${encodeURIComponent(id)}`);
   if (!res.ok) {
     addMsg('sys', res.error ?? '加载失败');
+    updateNewBtn();
     return;
   }
-  for (const m of res.history ?? []) {
-    if (m.role === 'user' || m.role === 'assistant') addMsg(m.role, m.text ?? '');
+  const history = res.history ?? [];
+  state.currentHasMessages = history.length > 0;
+  let lastAssistantText = null;
+  for (const m of history) {
+    if (m.role === 'user' || m.role === 'assistant') {
+      addMsg(m.role, m.text ?? '');
+      if (m.role === 'assistant') lastAssistantText = m.text ?? '';
+    }
+  }
+  // 给最后一条 assistant 节点标 seen，避免 pollReply 把旧回复当新回复重复渲染
+  if (lastAssistantText) {
+    const assistants = $('messages').querySelectorAll('.msg.assistant');
+    const lastEl = assistants[assistants.length - 1];
+    if (lastEl) lastEl.dataset.seen = lastAssistantText;
   }
   renderSessionSelect();
+  updateNewBtn();
 }
 
 // ---------- 操作 ----------
@@ -180,41 +219,61 @@ async function delSession() {
     return;
   }
   state.sessions = state.sessions.filter((s) => s.id !== id);
-  state.currentId = null;
-  $('messages').innerHTML = '';
-  renderSessionSelect();
+  if (state.sessions.length) {
+    // 还有会话：自动打开列表第一个
+    await openSession(state.sessions[0].id);
+  } else {
+    // 一个不剩：回到可建第一个的空态
+    state.currentId = null;
+    state.currentHasMessages = false;
+    $('messages').innerHTML = '';
+    renderSessionSelect();
+    updateNewBtn();
+  }
 }
 
 async function send() {
   const input = $('input');
   const text = input.value.trim();
   if (!text || !state.currentId || state.busy) return;
+  const sid = state.currentId;
   state.busy = true;
   $('btn-send').disabled = true;
   addMsg('user', text);
   input.value = '';
-  const res = await api(`/api/sessions/${encodeURIComponent(state.currentId)}/messages`, {
+  const res = await api(`/api/sessions/${encodeURIComponent(sid)}/messages`, {
     method: 'POST',
     body: JSON.stringify({ text }),
   });
   if (!res.ok) {
+    // 发送失败（如 session_busy）：提示后立即恢复，不进入轮询，避免锁死 120 秒
     addMsg('sys', res.error ?? '发送失败');
-  } else {
-    renderMainBar(res.mainStats);
-    if (res.mainStats?.pending) {
-      addMsg('sys', '提示：主对话正在回复中，参考上下文可能不完整，稍候会自动同步~');
-    }
+    state.busy = false;
+    $('btn-send').disabled = false;
+    return;
+  }
+  renderMainBar(res.mainStats);
+  if (res.mainStats?.pending) {
+    addMsg('sys', '提示：主对话正在回复中，参考上下文可能不完整，稍候会自动同步~');
   }
   // 拉取回复（轮询直至出现新助手消息）
-  await pollReply(state.currentId, Date.now());
+  await pollReply(sid);
+  // 发过消息即视为会话有内容，恢复「新建」按钮（若期间未切换会话）
+  if (state.currentId === sid) {
+    state.currentHasMessages = true;
+    updateNewBtn();
+  }
   state.busy = false;
   $('btn-send').disabled = false;
 }
 
-async function pollReply(sessionId, afterTs) {
+async function pollReply(sessionId) {
+  // 快照发起时的会话 id：轮询期间切换会话立即中止，避免把别的会话消息渲染进当前视图
+  const startedId = sessionId;
   for (let i = 0; i < 120; i++) {
+    if (state.currentId !== startedId) return;
     await new Promise((r) => setTimeout(r, 1000));
-    const res = await api(`/api/sessions/${encodeURIComponent(sessionId)}`);
+    const res = await api(`/api/sessions/${encodeURIComponent(startedId)}`);
     if (!res.ok) continue;
     const msgs = res.history ?? [];
     const last = msgs[msgs.length - 1];
