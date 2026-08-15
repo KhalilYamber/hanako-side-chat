@@ -13,6 +13,9 @@ HanaAgent（OpenHanako）侧边栏小对话插件：一个**纯 LLM 问答**面�
 - **模型切换**：设置里选择供应商/模型，新建的会话使用新模型；旧会话保持创建时的模型。
 - **转送交互**：点击面板顶部「主对话」指示条，可查看主对话最近轮次，点「引入」把某一轮贴进输入框（带引用标记）。
 - **上下文策略**：windowed（最近 N 轮 + 旧轮摘要，默认）或 full（全量）；可关思考过程、调轮数 N。
+- **思考内容可见**：辅助对话回复时先显示「思考中」，思考块（💭 默认折叠、点击展开）与正文分开展示（块级流式，host 不提供逐字流）。
+- **树枝-树叶隔离**：辅助会话归属于创建它的主对话（boundMain），列表严格按主对话隔离显示，参考上下文跟随归属主对话；旧数据自动惰性归位。
+- **健康自检**：面板加载失败或设置里可运行诊断（agentId/主会话定位/host 补丁/renderer 补丁/缓存/配置一键体检）。
 
 ## 安装
 
@@ -83,16 +86,27 @@ side-chat/
 
 - **附件像素级理解未实现**：用户发过的图片目前以文本引用（`[SessionFile]` + `[attached_image: 路径]`）进入参考上下文，辅助对话看不到图的像素内容。`session:send` 不支持多模态图片注入，此需求仅满足文本层，像素级为后续项。
 - **「不动电脑」靠提示词约束**：会话绑定主对话 agent 会继承其工具集；Hana 无「完全禁用工具」机制（核心工具不可禁用、`session:create` 无工具控制字段）。当前靠 boundary 强约束（「绝不调用任何工具」）压制，实测诱导测试通过，但属概率性服从，非硬隔离。
-- **主会话 = 最近活跃会话**：拿不到「当前打开」的主会话 id，参考上下文定位为该 agent 最近修改的 public 会话，非严格实时当前会话。
-- **agent 级归属**：辅助会话按主对话 agent 隔离（维护者域/空老师域各自独立）。session 级（同一 agent 下多个主会话之间）隔离依赖 host 提供主会话 id，暂未实现。
+- **切换感知依赖补丁**：辅助会话跟随主对话依赖 host 补丁注入 `sessionPath`（见下节）；补丁缺失时降级为「最近活跃会话」猜测，可能短暂串主对话。
 
 ## host 补丁升级检查（重要）
 
-本插件真机可用依赖一处 Hana server 侧补丁：`artifacts\server\0.446.6-win32-x64\bundle\index.js` 的 `jot` 集合加入 `"token"`，修复 widget iframe 的 ticket 校验。**Hana 升级会覆盖 artifacts 目录，导致补丁丢失、widget 复现「加载失败」**。
+本插件真机可用依赖 **两套 host 补丁**（Hana 升级会整体覆盖 artifacts 目录，补丁全部丢失）：
 
-升级后检查：
+| 补丁 | 位置 | 作用 | 丢失症状 |
+|---|---|---|---|
+| token 放行 | server `bundle/index.js` 的 `jot` 集合加 `"token"` | widget iframe ticket 校验放行 token | 面板「加载失败」 |
+| sessionPath 注入 | renderer `SendButton-BHh1P3ff.js` / `WorkspaceCompanionRail-_O9uAFJI.js` + server `jot` 加 `"sessionPath"` | iframe URL 携带当前主会话真实路径 | 辅助会话串主对话（退化为猜测） |
 
-1. 升级 Hana 后打开侧边栏「辅助对话」，若显示「加载失败」；
-2. 检查 `bundle\index.js` 中 `jot` 集合（`new Set([...])`）是否含 `"token"`（原版备份在 `artifacts\server\0.446.6-win32-x64\bundle\index.js.bak-20260815`，升级后被覆盖时从这里找回原样再改）；
-3. 若不含，重新加入 `"token"` 并重启 Hana；
-4. 建议向 OpenHanako 仓库（liliMozi/openhanako）上报该契约 bug，争取官方修复。
+**升级后一键处理**：
+
+```powershell
+# 1. 检查（PASS/FAIL 逐项）
+node debug\check-host-patch.js          # server token 补丁
+node debug\check-renderer-patch.js     # renderer+server sessionPath 补丁（7 项）
+# 2. 重打（幂等，自动备份 .bak-<日期>）
+node debug\apply-sessionpath-patch.cjs
+# 3. 冒烟回归（语法+补丁+索引+Docker 可用性）
+node debug\smoke-test.cjs
+```
+
+补丁状态也可在面板「设置 → 运行诊断」里查看（host 补丁 / renderer 补丁两项）。建议向 OpenHanako 仓库（liliMozi/openhanako）上报契约问题，争取官方支持主会话 id 透传。

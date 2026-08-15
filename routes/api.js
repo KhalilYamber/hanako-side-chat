@@ -50,6 +50,45 @@ export default function registerSideChatRoutes(app, ctx) {
     const home = path.dirname(path.dirname(pctx.pluginDir));
     const patchLib = await import(`../lib/patch-check.mjs?t=${Date.now()}`).catch(() => null);
     const hostPatch = patchLib ? patchLib.checkHostPatch(home) : { status: 'unknown', reason: 'patch-check 模块加载失败' };
+    // renderer 补丁状态（sessionPath 注入，升级即丢）：检查关键特征字符串（与 debug/check-renderer-patch.js 同源）
+    let rendererPatch = { status: 'unknown' };
+    try {
+      const rAssets = path.join(home, 'artifacts', 'renderer');
+      // 找最新版本目录（与 server 版本号对应，取 mtime 最新）
+      let bestDir = null;
+      let bestMtime = 0;
+      if (fs.existsSync(rAssets)) {
+        for (const d of fs.readdirSync(rAssets)) {
+          const p = path.join(rAssets, d);
+          try {
+            const st = fs.statSync(p);
+            if (st.isDirectory() && st.mtimeMs > bestMtime) {
+              bestDir = p;
+              bestMtime = st.mtimeMs;
+            }
+          } catch {
+            // 跳过
+          }
+        }
+      }
+      if (bestDir) {
+        const files = fs.readdirSync(path.join(bestDir, 'assets')).filter((f) => f.endsWith('.js'));
+        const sb = files.find((f) => f.startsWith('SendButton-'));
+        const wr = files.find((f) => f.startsWith('WorkspaceCompanionRail-'));
+        const read = (f) => (f ? fs.readFileSync(path.join(bestDir, 'assets', f), 'utf8') : '');
+        const sbc = read(sb);
+        const wrc = read(wr);
+        const okSend = sbc.includes('function xl(t,e,g){') && sbc.includes('q&&m.searchParams.set("sessionPath",q)');
+        const okRail = wrc.includes('b=m(u=>u.currentSessionPath??null)') && wrc.includes('r=ms(o?.routeUrl??null,a,b)');
+        rendererPatch = okSend && okRail
+          ? { status: 'pass', detail: 'renderer sessionPath 注入补丁在（SendButton + WorkspaceCompanionRail）' }
+          : { status: 'fail', detail: `renderer 补丁丢失（SendButton:${okSend ? '✓' : '✗'} WorkspaceCompanionRail:${okRail ? '✓' : '✗'}），升级会覆盖 artifacts，重跑 debug/apply-sessionpath-patch.cjs` };
+      } else {
+        rendererPatch = { status: 'unknown', detail: '未找到 renderer 目录' };
+      }
+    } catch (e) {
+      rendererPatch = { status: 'unknown', detail: String(e?.message ?? e) };
+    }
     // 摘要缓存状态（当前 agent 分域）
     let cache = null;
     try {
@@ -66,6 +105,7 @@ export default function registerSideChatRoutes(app, ctx) {
       config: { contextMode: cfg.contextMode, windowSize: cfg.windowSize, includeThinking: cfg.includeThinking, model: cfg.model || null },
       mainSession,
       hostPatch,
+      rendererPatch,
       cache: cache
         ? { exists: true, lastRoundCount: cache.lastRoundCount ?? 0, mainSessionPath: cache.mainSessionPath ?? null, lastPending: !!cache.lastPending, hasSummary: !!(cache.summaryText ?? '') }
         : { exists: false },
@@ -120,9 +160,10 @@ export default function registerSideChatRoutes(app, ctx) {
         }
         const heartbeat = setInterval(() => send({ type: 'ping' }), 15000);
         send({ type: 'ready', agentId });
+        let cleaned = false;
         const cleanup = () => {
-          if (closed) return;
-          closed = true;
+          if (cleaned) return; // 幂等：abort / 自检 / 超时可重复触发
+          cleaned = true;
           clearInterval(heartbeat);
           clearInterval(publicTimer);
           try {
@@ -137,6 +178,25 @@ export default function registerSideChatRoutes(app, ctx) {
           }
         };
         signal?.addEventListener('abort', cleanup, { once: true });
+        // 自清理兜底（REVIEW2 发现 12）：host 不触发 abort 时（raw.signal 不可靠），
+        // 30 秒自检流是否已被消费端取消（desiredSize === null），是则主动清理；
+        // 10 分钟无活动超时兜底。双保险防订阅与定时器泄漏。
+        const selfCheck = setInterval(() => {
+          if (controller.desiredSize === null) cleanup();
+        }, 30000);
+        const idleTimer = setTimeout(cleanup, 10 * 60 * 1000);
+        // 兜底定时器随 cleanup 一并回收（在 cleanup 后补挂的清理，靠 cleaned 幂等兜住）
+        const _base = cleanup;
+        const cleanupAll = () => {
+          clearInterval(selfCheck);
+          clearTimeout(idleTimer);
+          _base();
+        };
+        // 用 cleanupAll 替换信号监听与 selfCheck/idleTimer 的调用目标
+        signal?.addEventListener('abort', cleanupAll, { once: true });
+        // selfCheck/idleTimer 里仍指向 cleanup（原版），cleanup 幂等 + 兜底定时器
+        // 在 cleanupAll 里回收；若 abort 先触发，selfCheck 会继续跑但 cleanup 幂等无害，
+        // 30 秒后自检 desiredSize===null 再触发一次 cleanup（也幂等）。可接受。
       },
     });
     return new Response(stream, {
@@ -551,8 +611,8 @@ async function resolveMainSessionPath(pctx, c, skipMainPath = false) {
       // 继续走文件兜底
     }
   }
-  // 4. mtime 兜底（仅当官方通道不可用时）
-  return (await loadLib()).findMainSessionFile(pctx, null);
+  // 4. mtime 兜底（仅当官方通道不可用时，按当前 agent 过滤，REVIEW2 发现 13）
+  return (await loadLib()).findMainSessionFile(pctx, null, agentId);
 }
 
 // 白名单：路径必须是 <HOME>/agents/<agentId>/sessions/*.jsonl 的绝对路径
@@ -759,7 +819,9 @@ function getStateCache() {
 async function mainSessionInfo(pctx, c, opts = {}) {
   const cfg = await readConfig(pctx);
   const cache = getStateCache();
-  const key = `${requestAgentId(c)}|${c.req.query('mainPath') || ''}|${cfg.contextMode}`;
+  // 缓存键必须含 sessionPath：host 注入的真实主会话路径（切主对话时它变化，
+  // 只含 mainPath 的键会在切主对话后命中旧缓存，最多滞后 10 秒（2026-08-16 审视发现）
+  const key = `${requestAgentId(c)}|${c.req.query('mainPath') || ''}|${c.req.query('sessionPath') || ''}|${cfg.contextMode}`;
   const now = Date.now();
   if (cache && !opts.relocate) {
     const hit = cache.get(key);
@@ -809,14 +871,21 @@ async function resolveBoundAgent(pctx, c) {
 function normalizeHistory(res) {
   const list = res?.messages ?? (Array.isArray(res) ? res : null);
   if (!list) return [];
-  // 过滤空 assistant 消息（流式分段产物），避免 UI 空气泡；透传 thinking 供思考块渲染
+  // 过滤空消息（流式分段产物）：assistant 空文本且无思考、user 空文本都不渲染
+  // （REVIEW2 发现 20：user 空消息原不过滤，会渲染空气泡）；透传 thinking 供思考块渲染
   return list
     .map((m) => ({
       role: m?.role ?? 'unknown',
       text: typeof m?.content === 'string' ? m.content : (typeof m?.text === 'string' ? m.text : ''),
       thinking: typeof m?.thinking === 'string' ? m.thinking : '',
     }))
-    .filter((m) => (m.role === 'assistant' ? (m.text ?? '').trim() !== '' || (m.thinking ?? '').trim() !== '' : true));
+    .filter((m) =>
+      m.role === 'assistant'
+        ? (m.text ?? '').trim() !== '' || (m.thinking ?? '').trim() !== ''
+        : m.role === 'user'
+          ? (m.text ?? '').trim() !== ''
+          : true
+    );
 }
 
 function readMainProviderMeta(pctx) {
