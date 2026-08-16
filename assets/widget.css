@@ -169,7 +169,7 @@ body {
 .settings-error { color: #e05555; font-size: 11px; margin: 4px 0 0; }
 
 
-/* ---- markdown 渲染（v18）---- */
+/* ---- markdown 渲染（v19）---- */
 .msg .md-codeblock { margin: 6px 0; border-radius: 8px; overflow: hidden; background: var(--bg-elevated, rgba(128,128,128,0.08)); border: 1px solid var(--border, rgba(128,128,128,0.25)); }
 .msg .md-codeblock-head { display: flex; justify-content: space-between; align-items: center; padding: 3px 8px; font-size: 11px; color: var(--text-muted, #999); background: rgba(128,128,128,0.1); }
 .msg .md-copy { border: none; background: transparent; color: var(--text-muted, #999); cursor: pointer; font-size: 11px; padding: 2px 6px; border-radius: 4px; }
@@ -190,3 +190,8 @@ body {
 .msg th { background: rgba(128,128,128,0.1); }
 .msg hr { border: none; border-top: 1px solid var(--border, rgba(128,128,128,0.25)); margin: 8px 0; }
 .msg a { color: var(--accent, #4a9eff); }
+/* 代码高亮 token 配色（跟随主题变量，可用 --md-tok-* 覆盖） */
+.msg .tok-str { color: var(--md-tok-str, #6a9955); }
+.msg .tok-com { color: var(--md-tok-com, #8b949e); font-style: italic; }
+.msg .tok-kw { color: var(--md-tok-kw, #9b6cf0); }
+.msg .tok-num { color: var(--md-tok-num, #d1863c); }

@@ -1,7 +1,7 @@
 // assets/markdown.js —— 极简 markdown 渲染管线（三段式：escape→parse→sanitize）
 // 手写实现，无外部依赖。UMD：浏览器挂 window.MD，node 下 module.exports。
-// 语法：标题 1-6 / 粗体 / 斜体 / 删除线 / 行内代码 / 代码块(语言+复制按钮) /
-//       引用块 / 有序无序列表(嵌套一层) / 链接 / 表格 / 水平线 / 段落
+// 语法：标题 1-6 / 粗体 / 斜体 / 删除线 / 行内代码 / 代码块(语言+复制按钮+极简高亮) /
+//       引用块 / 有序无序列表(嵌套一层) / 链接(URL 括号配对) / 表格 / 水平线 / 段落
 // 安全：原始 HTML 一律剥离；href 协议白名单（http/https/mailto）；标签/属性白名单。
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) module.exports = factory();
@@ -73,10 +73,8 @@
       codes.push(c);
       return '\u0000' + (codes.length - 1) + '\u0000';
     });
-    // 链接优先（避免 [x](y) 内粗体误解析）
-    t = t.replace(/\[([^\]]+)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g, function (_, label, url) {
-      return '<a href="' + escapeHtml(url) + '" target="_blank" rel="noopener noreferrer">' + inlineInner(label) + '</a>';
-    });
+    // 链接优先（避免 [x](y) 内粗体误解析）；URL 括号配对解析（T2a）
+    t = parseLinks(t);
     t = t.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
     t = t.replace(/\*([^*\n]+)\*/g, '<em>$1</em>');
     t = t.replace(/~~([^~\n]+)~~/g, '<del>$1</del>');
@@ -92,6 +90,127 @@
       .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
       .replace(/\*([^*]+)\*/g, '<em>$1</em>')
       .replace(/`([^`\n]+)`/g, '<code>$1</code>');
+  }
+
+  /** 行内链接解析：URL 括号配对（T2a）。[label] 部分保持原语义；URL 内 ( 深度 +1、) 深度 -1，
+   *  深度归零的 ) 才是链接结束，从而 URL 可含括号不被截断。危险协议仍由 sanitizeHtml 兜底。 */
+  function parseLinks(text) {
+    var out = '';
+    var i = 0;
+    var n = text.length;
+    while (i < n) {
+      var open = text.indexOf('[', i);
+      if (open < 0) { out += text.slice(i); break; }
+      out += text.slice(i, open);
+      // 找 [label]( 起始：首个 ] 后紧跟 (
+      var close = -1;
+      var k = open + 1;
+      while (k < n - 1) {
+        if (text[k] === ']' && text[k + 1] === '(') { close = k; break; }
+        k++;
+      }
+      if (close < 0) { out += '['; i = open + 1; continue; }
+      var label = text.slice(open + 1, close);
+      // 括号配对扫描 URL
+      var depth = 1;
+      var j = close + 2;
+      var urlEnd = -1;
+      while (j < n) {
+        var ch = text[j];
+        if (ch === '(') depth++;
+        else if (ch === ')') {
+          depth--;
+          if (depth === 0) { urlEnd = j; break; }
+        }
+        j++;
+      }
+      if (urlEnd < 0) { out += '['; i = open + 1; continue; }
+      var url = text.slice(close + 2, urlEnd);
+      // 可选 "title"（链接后空白 + 引号串）：消费后丢弃（与原实现一致）
+      var tm = /^\s+"[^"]*"/.exec(text.slice(urlEnd + 1));
+      var end = urlEnd + (tm ? 1 + tm[0].length : 0);
+      // URL 非空且不含空白才算链接，否则按普通文本处理（保持原 [^)\s] 的空白约束）
+      if (!url.trim() || /\s/.test(url)) { out += '['; i = open + 1; continue; }
+      out += '<a href="' + escapeHtml(url) + '" target="_blank" rel="noopener noreferrer">' + inlineInner(label) + '</a>';
+      i = end + 1;
+    }
+    return out;
+  }
+
+  // ---------- 极简代码高亮（T2b，纯函数，无外部依赖） ----------
+
+  var HL_LANGS = { js: 1, javascript: 1, ts: 1, typescript: 1, json: 1 };
+  var HL_KEYWORDS = {
+    const: 1, let: 1, var: 1, function: 1, return: 1, if: 1, else: 1, for: 1, while: 1,
+    class: 1, new: 1, async: 1, await: 1, try: 1, catch: 1, throw: 1, import: 1, export: 1, from: 1,
+  };
+
+  /** 极简 tokenizer：按字符扫描，识别字符串（含模板串简易版）/ 行注释与块注释 / 关键字 / 数字。
+   *  只对 js/javascript/ts/typescript/json 染色（json 只染字符串与数字），其它语言原样转义。
+   *  输出先 HTML 转义再包 span，防注入；span 包裹不影响 code 元素 textContent（复制仍是纯文本）。 */
+  function highlight(code, lang) {
+    var l = String(lang || '').toLowerCase();
+    if (!HL_LANGS[l]) return escapeHtml(code);
+    var isJson = l === 'json';
+    var s = String(code == null ? '' : code);
+    var out = '';
+    var i = 0;
+    var n = s.length;
+    function emit(text, cls) {
+      var esc = escapeHtml(text);
+      out += cls ? '<span class="' + cls + '">' + esc + '</span>' : esc;
+    }
+    while (i < n) {
+      var c = s[i];
+      // 注释（json 不处理）
+      if (!isJson && c === '/' && s[i + 1] === '/') {
+        var lc = s.indexOf('\n', i);
+        if (lc < 0) lc = n;
+        emit(s.slice(i, lc), 'tok-com');
+        i = lc;
+        continue;
+      }
+      if (!isJson && c === '/' && s[i + 1] === '*') {
+        var bc = s.indexOf('*/', i + 2);
+        var bend = bc < 0 ? n : bc + 2;
+        emit(s.slice(i, bend), 'tok-com');
+        i = bend;
+        continue;
+      }
+      // 字符串（含模板串简易版，不展开 ${}）
+      if (c === '"' || c === "'" || c === '`') {
+        var q = i + 1;
+        while (q < n) {
+          if (s[q] === '\\') { q += 2; continue; }
+          if (s[q] === c) { q++; break; }
+          q++;
+        }
+        emit(s.slice(i, q), 'tok-str');
+        i = q;
+        continue;
+      }
+      // 数字
+      if (/[0-9]/.test(c) || (c === '.' && /[0-9]/.test(s[i + 1] || ''))) {
+        var m = /^(0[xX][0-9a-fA-F]+|\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?/.exec(s.slice(i));
+        var numLen = m ? m[0].length : 1;
+        emit(s.slice(i, i + numLen), 'tok-num');
+        i += numLen;
+        continue;
+      }
+      // 关键字 / 标识符
+      if (/[A-Za-z_$]/.test(c)) {
+        var w = i + 1;
+        while (w < n && /[A-Za-z0-9_$]/.test(s[w])) w++;
+        var word = s.slice(i, w);
+        emit(word, (!isJson && HL_KEYWORDS[word]) ? 'tok-kw' : null);
+        i = w;
+        continue;
+      }
+      // 其它单字符
+      emit(c);
+      i++;
+    }
+    return out;
   }
 
   // ---------- 块级解析（parse block） ----------
@@ -123,7 +242,7 @@
         i++;
         while (i < n && !/^```\s*$/.test(lines[i])) { code.push(lines[i]); i++; }
         i++; // 跳过闭合
-        var codeHtml = escapeHtml(code.join('\n'));
+        var codeHtml = highlight(code.join('\n'), lang);
         out.push(
           '<div class="md-codeblock">' +
             '<div class="md-codeblock-head"><span class="md-codeblock-lang">' +
@@ -240,5 +359,5 @@
     });
   }
 
-  return { mdToHtml: mdToHtml, sanitizeHtml: sanitizeHtml };
+  return { mdToHtml: mdToHtml, sanitizeHtml: sanitizeHtml, highlight: highlight };
 });
