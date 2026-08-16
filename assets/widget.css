@@ -120,14 +120,21 @@ body {
 #settings-panel select, #settings-panel input[type=number] { width: 100%; padding: 4px; border: 1px solid var(--border, #ddd); border-radius: 6px; background: var(--bg-input, #fff); color: var(--text, #222); }
 /* ：辅助对话自我意识提示词：说明文字（小字灰）+ 编辑区（暗色对齐现有设置控件，宽度占满面板） */
 #settings-panel .settings-hint { font-size: 11px; color: var(--text-dim, #888); line-height: 1.5; margin: 0; }
+/* ：编辑框加大：min/max-height 限幅保证默认提示词可完整显示、超长内部滚动，保留竖向手动拖拽 */
 #set-self-prompt {
   width: 100%; box-sizing: border-box; resize: vertical;
+  min-height: 180px; max-height: 320px; overflow-y: auto;
   padding: 6px 8px; line-height: 1.4;
   border: 1px solid var(--border, #ddd); border-radius: 6px;
   background: var(--bg-input, #fff); color: var(--text, #222);
   font-family: var(--font-mono, Consolas, "Courier New", monospace);
   font-size: 12px;
 }
+/* ：暗色滚动条：跟随现有主题边框/弱化色变量，简洁实现 */
+#set-self-prompt::-webkit-scrollbar { width: 8px; }
+#set-self-prompt::-webkit-scrollbar-track { background: transparent; }
+#set-self-prompt::-webkit-scrollbar-thumb { background: var(--border, #ccc); border-radius: 4px; }
+#set-self-prompt::-webkit-scrollbar-thumb:hover { background: var(--text-dim, #999); }
 #preview-text { flex: 1; white-space: pre-wrap; background: var(--bg-subtle, #f4f4f4); padding: 10px; border-radius: 8px; font-size: 12px; overflow-y: auto; }
 .preview-actions { display: flex; gap: 8px; }
 .preview-actions button { flex: 1; }
