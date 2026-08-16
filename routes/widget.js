@@ -6,6 +6,13 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
+// lib 模块懒加载：插件 reload 后 Node 对静态 import 的模块缓存不会失效，
+// 会拿到 dev 第一次安装时的旧版本（已踩坑），故用带时间戳的动态 import。
+let _adapter = null;
+async function loadAdapter() {
+  return _adapter ??= import(`../lib/host-adapter.js?t=${Date.now()}`);
+}
+
 // 只允许同源的 theme.css URL，避免把任意外部地址注入页面。
 // 用 URL 解析做同源校验：外部绝对/协议相对 URL 解析出的 host 与请求 host 不一致即拒绝
 // （旧实现是子串匹配，https://evil.com/api/plugins/theme.css 可绕过，REVIEW1 发现 9 残余）。
@@ -25,10 +32,10 @@ export default function registerWidgetRoutes(app, ctx) {
   // mode：'widget'（侧栏面板）| 'page'（页面入口）。两者共用同一模板渲染，
   // 通过 <html data-surface> 区分运行表面：模板默认 data-surface="widget"（assets/widget.html），
   // page 模式在此替换为 page。前端 app.js 启动时读取它得到 SURFACE。
-  const render = (c, mode) => {
+  const render = async (c, mode) => {
     const css = c.req.query('hana-css') || '';
     const theme = c.req.query('hana-theme') || '';
-    const token = c.req.query('token') || '';
+    const token = (await loadAdapter()).resolveToken(c);
     const htmlPath = path.join(ctx.pluginDir, 'assets', 'widget.html');
     let html;
     try {
@@ -53,13 +60,9 @@ export default function registerWidgetRoutes(app, ctx) {
     }
     // [page-ext] 页面模式未来可在此注入专属数据/布局（当前 /page 与 /widget 共用同一渲染）
     // 无 ticket 的请求（host 走 cookie 会话时会省略 ticket）不会触发 server 下发 asset cookie，
-    // 导致 iframe 内引用 assets 时 403。这里把 token 注入 assets 引用 URL 以通过认证。
-    if (token) {
-      html = html.replace(
-        /(\/api\/plugins\/side-chat\/assets\/[^"'\s]+)/g,
-        (m) => `${m}${m.includes('?') ? '&' : '?'}token=${encodeURIComponent(token)}`
-      );
-    }
+    // 导致 iframe 内引用 assets 时 403。这里把 token 注入 assets 引用 URL 以通过认证
+    // （逻辑已迁入 adapter.injectAssetsToken，HOST_ADAPTER.md 迁移步骤 3）。
+    html = (await loadAdapter()).injectAssetsToken(html, token);
     const res = c.html(html);
     // 防缓存加固：HTML 绝不允许被 webview/service worker 缓存（含 ticket 的 URL 不能复用旧响应）
     res.headers.set('Cache-Control', 'no-store');

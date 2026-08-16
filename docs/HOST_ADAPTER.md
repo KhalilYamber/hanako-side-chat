@@ -1,6 +1,6 @@
-# Host-Adapter 降耦设计（草案 v0.1）
+# Host-Adapter 降耦设计（草案 v0.2）
 
-> 状态：设计草案，未实现。目标版本：0.4.0（或随发布节奏）。
+> 状态：迁移步骤 1/2/3/5 已完成（见 3.3 标注），步骤 4 为前端确认项（无动作）。
 
 ## 1. 背景
 
@@ -41,14 +41,16 @@ lib/host-adapter.js（新）
 │   ├── findMainSessionFile(...)                  → JSONL 直读定位（含 agentId 过滤）
 │   └── sessionListParser / mtimeFallback
 ├── host API 封装（官方接口 + 扩展字段，收敛语义）
-│   ├── createSession(ctx, {agentId, model})      → 包装 session:create + model 扩展字段
-│   ├── readHistory / readJsonl                   → 主源 JSONL 直读 + history 降级
-│   ├── sendMessage(ctx, {path, text, context})   → 包装 session:send + 两套上下文
-│   ├── getAgentProfile / getAgentModel           → agent:profile / agent:config（只取 models.chat）
-│   └── listSessions(ctx, agentId)                → session:list + path/visibility/modified 解析
+│   ├── createSession(ctx, {agentId, model})      → 包装 session:create + model 扩展字段（✅ 步骤 2）
+│   ├── readHistory / readJsonl                   → 主源 JSONL 直读 + history 降级（✅ 步骤 2）
+│   ├── sendMessage(ctx, {path, text, context})   → 包装 session:send + 两套上下文（✅ 步骤 2）
+│   ├── sampleText(ctx, payload)                  → 包装 model:sample-text，摘要采样（✅ 步骤 5）
+│   ├── getAgentProfile / getAgentModel           → agent:profile / agent:config（只取 models.chat）⚠️ 未实现
+│   └── listSessions(ctx, agentId)                → session:list + path/visibility/modified 解析 ⚠️ 未实现
 └── 凭证与请求上下文
-    ├── getSurfaceAuth(ctx)   → query/cookie/token 兜底解析（从 routes/widget.js 迁入）
-    └── isPatchRequired()     → 面板诊断用（host 补丁状态）
+    ├── resolveToken(c)        → iframe URL token 解析（✅ 步骤 3，自 routes/widget.js 迁入）
+    ├── injectAssetsToken(html, token)            → token 注入 assets 引用 URL（✅ 步骤 3）
+    └── isPatchRequired()     → 面板诊断用（host 补丁状态）⚠️ 未实现
 ```
 
 ### 3.2 对外接口（业务代码视角）
@@ -60,18 +62,18 @@ lib/host-adapter.js（新）
   locateMainSession(ctx, store, {sessionPath, boundMain, sessionId}),  // 五级降级，返回 {path, method, source}
   mainSource(path),                 // JSONL 直读 or history 降级的统一入口
   api: { create, send, history, profile, model, listSessions },  // 全部走官方管道
-  auth: { resolveToken(ctx) },
+  auth: { resolveToken(c) },        // ✅ 已实现（命名导出 resolveToken/injectAssetsToken）
 }
 ```
 
 ### 3.3 迁移步骤（渐进式，不搞大爆炸）
 
-1. 新建 `lib/host-adapter.js`，从 `lib/main-context.js` **迁移**（不是复制）：`resolveMainSessionPath`、`findMainSessionFile`、`parseSessionJsonl`、`roundsFromHistory` 的 host 相关部分。
-2. `routes/api.js` 改为调用 adapter；删除本地重复实现。
-3. `routes/widget.js` 的 token 解析迁入 `auth.resolveToken`。
-4. 前端不动（`SESSION_PATH` 透传逻辑在 app.js，属于补丁契约，adapter 后端接口不变）。
-5. `lib/main-context.js` 瘦身为纯业务逻辑（组装 context、摘要、预算），不再直接碰 host API。
-6. 回归：smoke-test 全绿 + 真机面板功能抽查。
+1. 新建 `lib/host-adapter.js`，从 `lib/main-context.js` **迁移**（不是复制）：`resolveMainSessionPath`、`findMainSessionFile`、`parseSessionJsonl`、`roundsFromHistory` 的 host 相关部分。**✅ 已完成**
+2. `routes/api.js` 改为调用 adapter；删除本地重复实现。**✅ 已完成**（createSession/readHistory/sendMessage 封装）
+3. `routes/widget.js` 的 token 解析迁入 `auth.resolveToken`。**✅ 已完成**（resolveToken/injectAssetsToken）
+4. 前端不动（`SESSION_PATH` 透传逻辑在 app.js，属于补丁契约，adapter 后端接口不变）。**确认项，无动作**
+5. `lib/main-context.js` 瘦身为纯业务逻辑（组装 context、摘要、预算），不再直接碰 host API。**✅ 已完成**（model:sample-text 经 sampleText 封装）
+6. 回归：smoke-test 全绿 + 真机面板功能抽查。**⏳ 待执行**（smoke-test 已绿，真机抽查随发布）
 
 ### 3.4 验收标准
 
