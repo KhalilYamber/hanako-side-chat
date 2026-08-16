@@ -494,7 +494,14 @@ export default function registerSideChatRoutes(app, ctx) {
       }
     }
     // config.set 只写单 key，多 key 用 setMany（受 manifest schema 校验）
-    if (Object.keys(updates).length) await pctx.config.setMany(updates);
+    if (Object.keys(updates).length) {
+      try {
+        await pctx.config.setMany(updates);
+      } catch (e) {
+        // REVIEW3 H1：setMany 失败（如 schema 校验拒绝）必须显式报错，前端不再静默丢设置
+        return c.json({ ok: false, error: `设置保存失败：${String(e?.message ?? e).slice(0, 200)}` });
+      }
+    }
     return c.json({ ok: true, config: cfg });
   });
 
@@ -581,6 +588,9 @@ async function readConfig(ctx) {
       if (cur[k] !== undefined) base[k] = cur[k];
     }
   }
+  // selfPrompt 空串（新装默认/用户清空）回退内置默认文案：
+  // 语义 =「清空恢复默认」，而不是禁用（REVIEW3 H1 修正，保证机制始终可用）
+  if (!String(base.selfPrompt ?? '').trim()) base.selfPrompt = DEFAULT_SELF_PROMPT;
   // 供应商导入快照（仅 baseUrl/api/models，无密钥）存于 manifest 声明的 providerImportJson 字段
   if (typeof base.providerImportJson === 'string' && base.providerImportJson) {
     try {
@@ -799,7 +809,7 @@ async function collectMainContext(pctx, c, cfg, opts = {}) {
       const windowSize = Math.max(1, Number(cfg.windowSize) || 30);
       const recent = rounds.slice(-windowSize);
       const old = rounds.slice(0, Math.max(0, rounds.length - windowSize));
-      reference = (await loadLib()).buildReferenceContext(recent, cfg);
+      reference = (await loadLib()).buildReferenceContext(recent, { ...cfg, baseIndex: old.length });
       if (old.length && !opts.skipSummary) {
         // 摘要缓存复用：同主会话、轮数未回退、pending 状态一致才可复用，否则重新摘要
         const cache = (await loadLib()).loadCache(pctx.dataDir, requestAgentId(c));
@@ -876,13 +886,16 @@ async function buildMainSnapshot(pctx, c, cfg, sessionPath) {
   if (!rounds.length) return null;
   const fullCount = lib.completedRounds(rounds);
   const windowSize = cfg.contextMode === 'full' ? Infinity : Math.max(1, Number(cfg.windowSize) || 30);
-  const recent = rounds.slice(-windowSize);
-  const old = rounds.slice(0, Math.max(0, rounds.length - windowSize));
+  // REVIEW3 H2：只渲染「已配对」轮次（slice(0, fullCount)），pending 轮（最后一条未回复的 user）
+  // 不渲染，等配对完成后由增量路径追加——保证每一轮在参考上下文里恰好出现一次。
+  const recent = rounds.slice(0, fullCount).slice(-windowSize);
+  const old = rounds.slice(0, Math.max(0, fullCount - windowSize));
   // full 模式总量自适应：主对话几百轮时每轮 4000 字会让注入文本远超模型上下文
   // （被模型侧截断，用户看到「还是不全」）。8 万字符 ≈ 4 万 token 总量预算，
   // 按轮数均摊每轮上限（每轮最低 500 字），保证覆盖全部轮次且总量可控。
   let text = lib.buildReferenceContext(recent, {
     ...cfg,
+    baseIndex: old.length, // REVIEW3 M2：窗口内序号 = 全局序号（窗口外的轮次编号继续）
     maxTotalChars: cfg.contextMode === 'full' ? 80000 : undefined,
   });
   if (old.length && cfg.contextMode !== 'full') {
@@ -904,11 +917,34 @@ async function syncMainContext(pctx, c, entry, cfg) {
   const fullCount = lib.completedRounds(rounds);
   const lastRound = rounds[rounds.length - 1];
   const pending = !!(lastRound && lastRound.user && !lastRound.assistant);
-  let mainCtx = entry.mainCtx;
-  // 快照缺失 / 来源会话变化（boundMain 失效重绑等）/ 模式变化 → 重建
+  // 读-改-写原子化（REVIEW3 H3）：增量计算与写回在同一索引锁内，
+  // 并发窗口不会互相覆盖；重建（慢，含摘要模型调用）在锁外做。
+  let res = await (await loadStore()).updateSession(pctx.dataDir, entry.id, (cur) => {
+    const ctx = cur.mainCtx;
+    // 快照缺失 / 来源会话变化 / 模式变化 → 需要重建（不在此写入，锁外做）
+    if (!ctx || ctx.mainSessionPath !== sessionPath || ctx.mode !== cfg.contextMode) return null;
+    // M1（REVIEW3）：轮数回退（文件被替换/截断/归档清理）→ 清空触发下次重建，防陈旧残留
+    if (fullCount < ctx.lastRoundCount) return { mainCtx: null };
+    // 增量追加：只追配对完整的轮次，原文形式追加（序号接着全局编号）
+    if (fullCount > ctx.lastRoundCount) {
+      const added = rounds.slice(ctx.lastRoundCount, fullCount);
+      if (added.length) {
+        const append = lib.formatRounds(added, cfg, ctx.lastRoundCount);
+        ctx.text = ctx.text ? `${ctx.text}\n\n${append}` : append;
+        ctx.lastRoundCount = fullCount;
+        return { mainCtx: ctx };
+      }
+    }
+    return null; // 无变化不写
+  });
+  let mainCtx = res.entry?.mainCtx;
+  // 锁内判定需要重建（缺失/来源或模式变化）→ 锁外重建再原子写入
   if (!mainCtx || mainCtx.mainSessionPath !== sessionPath || mainCtx.mode !== cfg.contextMode) {
-    mainCtx = await buildMainSnapshot(pctx, c, cfg, sessionPath);
-    if (mainCtx) await (await loadStore()).upsertSession(pctx.dataDir, { id: entry.id, mainCtx });
+    const rebuilt = await buildMainSnapshot(pctx, c, cfg, sessionPath);
+    res = rebuilt
+      ? await (await loadStore()).updateSession(pctx.dataDir, entry.id, () => ({ mainCtx: rebuilt }))
+      : res;
+    mainCtx = res.entry?.mainCtx ?? rebuilt;
   }
   if (!mainCtx) {
     return {
@@ -916,16 +952,6 @@ async function syncMainContext(pctx, c, entry, cfg) {
       reference: '',
       stats: { rounds: fullCount, viaApi, pending, file: path.basename(sessionPath), ...(apiError ? { apiError } : {}) },
     };
-  }
-  // 增量追加：只追配对完整的轮次，原文形式追加（不重复 header，轮次序号接着编号）
-  if (fullCount > mainCtx.lastRoundCount) {
-    const added = rounds.slice(mainCtx.lastRoundCount, fullCount);
-    if (added.length) {
-      const append = lib.formatRounds(added, cfg, mainCtx.lastRoundCount);
-      mainCtx.text = mainCtx.text ? `${mainCtx.text}\n\n${append}` : append;
-      mainCtx.lastRoundCount = fullCount;
-      await (await loadStore()).upsertSession(pctx.dataDir, { id: entry.id, mainCtx });
-    }
   }
   return {
     ok: true,

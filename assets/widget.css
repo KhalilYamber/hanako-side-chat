@@ -154,3 +154,7 @@ body {
 .msg.sys.thinking { color: var(--text-dim, #999); }
 .msg.sys.thinking::after { content: ''; display: inline-block; width: 1.2em; text-align: left; animation: thinkdots 1.2s steps(4) infinite; }
 @keyframes thinkdots { 0% { content: ''; } 25% { content: '.'; } 50% { content: '..'; } 75% { content: '...'; } 100% { content: ''; } }
+
+/* REVIEW3 M8：设置保存失败提示 */
+.settings-error { color: #e05555; font-size: 11px; margin: 4px 0 0; }
+

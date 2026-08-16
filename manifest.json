@@ -60,6 +60,12 @@
           "default": true,
           "title": "包含主对话思考过程",
           "description": "把主对话的思考过程（reasoning）一并注入参考上下文。"
+        },
+        "selfPrompt": {
+          "type": "string",
+          "default": "",
+          "title": "辅助对话自我意识提示词",
+          "description": "定义辅助对话身份与行为准则的附加系统提示词（可编辑；留空时使用插件内置默认，详见 README）。REVIEW3 H1：须在 manifest 声明才能通过 schema 校验持久化。"
         }
       }
     }

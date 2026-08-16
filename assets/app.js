@@ -35,11 +35,13 @@ async function api(path, opts = {}) {
   // （SSE 追踪到才带；null 时后端走 agent 最近会话兜底，行为与旧版一致）
   if (state.lastMainPath) extra.push(`mainPath=${encodeURIComponent(state.lastMainPath)}`);
   const url = API_BASE + path + (extra.length ? `${sep}${extra.join('&')}` : '');
-  // fetch 超时兜底：网络挂起时不能让 busy/轮询永久锁死（REVIEW1 发现 16 残余，30 秒上限）
+  // fetch 超时兜底：网络挂起时不能让 busy/轮询永久锁死（REVIEW1 发现 16 残余）。
+  // 默认 30 秒；opts.timeout 可覆盖（REVIEW3 M10：POST /api/sessions 含快照摘要模型调用，放宽到 90 秒）
   let abortTimer = null;
   if (!opts.signal) {
     const ctrl = new AbortController();
-    abortTimer = setTimeout(() => ctrl.abort(), 30000);
+    const ms = Number(opts.timeout) > 0 ? Number(opts.timeout) : 30000;
+    abortTimer = setTimeout(() => ctrl.abort(), ms);
     opts = { ...opts, signal: ctrl.signal };
   }
   let res;
@@ -483,7 +485,7 @@ async function newSession() {
   newBtn.textContent = '创建中…';
   newBtn.title = '正在创建并生成主对话上下文快照…';
   try {
-    const res = await api('/api/sessions', { method: 'POST', body: JSON.stringify({}) });
+    const res = await api('/api/sessions', { method: 'POST', body: JSON.stringify({}), timeout: 90000 });
     if (!res.ok) {
       addMsg('sys', res.error ?? '新建失败');
       return;
@@ -731,14 +733,34 @@ async function saveSettings() {
     contextMode: $('set-context-mode').value,
     windowSize: Number($('set-window').value) || 30,
     includeThinking: $('set-thinking').checked,
-    selfPrompt: $('set-self-prompt').value.trim(), // ：本地 trim 后提交，空串=清空
+    selfPrompt: $('set-self-prompt').value.trim(), // ：本地 trim 后提交，空串=恢复内置默认
   };
   const res = await api('/api/settings', { method: 'POST', body: JSON.stringify(body) });
-  if (!res.ok) return;
+  if (!res.ok) {
+    // REVIEW3 M8：保存失败显式提示（原静默丢弃，配合 H1 时用户反复编辑无效无感知）
+    showSettingsError(res.error ?? '设置保存失败');
+    return false;
+  }
   state.config = res.config;
   // 设置变更后重新拉主对话信息（mode/windowSize 影响指示条文案）；
   // 旧实现 renderMainBar(null) 会把指示条误显示为「主对话：未找到」
   await refreshMain();
+  return true;
+}
+
+// 设置面板内错误提示（REVIEW3 M8）：红字 3 秒自动消失；saveSettings 失败时同时阻止面板关闭
+function showSettingsError(msg) {
+  let err = $('settings-error');
+  if (!err) {
+    err = document.createElement('div');
+    err.id = 'settings-error';
+    err.className = 'settings-error';
+    $('settings-panel').appendChild(err);
+  }
+  err.textContent = msg;
+  err.classList.remove('hidden');
+  clearTimeout(showSettingsError._t);
+  showSettingsError._t = setTimeout(() => err.classList.add('hidden'), 3000);
 }
 
 async function renderProviders() {
@@ -874,8 +896,10 @@ function canOpenCtxMenu(targetId) {
 
 function openCtxMenu(x, y, targetId) {
   ctxMenuTargetId = targetId;
-  // 菜单每次打开重置删除项为「🗑 删除」：不带历史 armed 显示残留
-  // （若该目标仍处于 3 秒确认窗口内，再点删除会直接执行，见 delSession）
+  // REVIEW3 M9：彻底重置该目标的 3 秒确认窗口（放弃残留 armed）——
+  // 否则「菜单关闭后 3 秒内重开」时显示「🗑 删除」实际点击却直接真删，两态被绕过
+  disarmDel(targetId);
+  // 菜单每次打开重置删除项为「🗑 删除」（armDel/disarmDel 的 renderCtxMenuDel 也会同步）
   ctxMenuDel.textContent = '🗑 删除';
   ctxMenuDel.classList.remove('armed');
   ctxMenu.classList.remove('hidden');
@@ -953,15 +977,17 @@ $('rename-input').addEventListener('blur', (e) => {
   if ($('rename-input').value === renameOriginal) exitRename();
 });
 $('input').addEventListener('keydown', (e) => {
+  if (e.isComposing) return; // REVIEW3 M7：输入法选词中的 Enter 不触发发送（对齐 rename-input）
   if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault();
     send();
   }
 });
 $('btn-settings').onclick = () => $('settings-panel').classList.remove('hidden');
-$('btn-close-settings').onclick = () => {
-  saveSettings();
-  $('settings-panel').classList.add('hidden');
+$('btn-close-settings').onclick = async () => {
+  // REVIEW3 M8：保存失败不关面板（用户看到错误提示后修正）；成功才关闭
+  const ok = await saveSettings();
+  if (ok) $('settings-panel').classList.add('hidden');
 };
 $('btn-diag').onclick = async () => {
   const out = $('diag-output');
