@@ -709,6 +709,7 @@ function fillSettings() {
   $('set-context-mode').value = cfg.contextMode;
   $('set-window').value = cfg.windowSize;
   $('set-thinking').checked = !!cfg.includeThinking;
+  $('set-self-prompt').value = cfg.selfPrompt ?? ''; // ：回显自我意识提示词（后端可能缺省，?? '' 兜底）
   $('wrap-window').style.display = cfg.contextMode === 'windowed' ? 'block' : 'none';
 }
 
@@ -717,6 +718,7 @@ async function saveSettings() {
     contextMode: $('set-context-mode').value,
     windowSize: Number($('set-window').value) || 30,
     includeThinking: $('set-thinking').checked,
+    selfPrompt: $('set-self-prompt').value.trim(), // ：本地 trim 后提交，空串=清空
   };
   const res = await api('/api/settings', { method: 'POST', body: JSON.stringify(body) });
   if (!res.ok) return;

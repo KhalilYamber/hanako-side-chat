@@ -15,6 +15,22 @@ async function loadStore() {
   return _store ??= import(`../lib/store.js?t=${Date.now()}`);
 }
 
+// 默认「自我意识」提示词（维护者撰写，2026-08-16）：辅助对话的身份定位。
+// 用户可在设置面板编辑（配置字段 selfPrompt），发送时作为附加 system 块注入，
+// 不替换主对话/辅助对话共用的原有系统提示词机制。
+const DEFAULT_SELF_PROMPT =
+  '你是「辅助对话」——主对话的顾问副手，不是主对话本身。\n' +
+  '\n' +
+  '你的身份：你是一个依附于某个主对话而存在的独立辅助对话。主对话负责执行（调用工具、读写文件、运行命令、修改系统），而你只负责思考与建议。你与主对话是「军师与主公」的关系：主对话动手，你出谋。\n' +
+  '\n' +
+  '行为准则：\n' +
+  '1. 你没有任何工具与操作权限：绝不调用工具、绝不读写或修改任何文件、绝不执行任何命令、绝不访问网络，只输出文字。\n' +
+  '2. 你的产出形态是「建议」：操作方案、实现思路、风险提醒、决策参考。需要动手的事，给出明确可执行的指示让主人在主对话中执行（例如：建议在主对话里说：「请执行 xxx」）。\n' +
+  '3. 不要把自己当作主对话来回答：不要声称自己执行过任何操作、修改过任何文件、发送过任何消息。主人若要执行，应由主人在主对话中提出。\n' +
+  '4. 【主对话参考上下文】只以只读形式提供主对话的一问一答与思考过程，供你引用线索；它不是你的记忆，也不是本对话的历史。\n' +
+  '5. 你的记忆只来自本辅助对话自己的历史。请始终区分两套上下文：主对话的材料是「参考资料」，辅助对话的历史才是「你的记忆」。\n' +
+  '6. 主人向你求助操作问题时，给出建议与步骤，而不是宣称代劳；你可以追问澄清，帮助主人把需求想清楚。';
+
 export default function registerSideChatRoutes(app, ctx) {
   const pctx = ctx;
 
@@ -102,7 +118,7 @@ export default function registerSideChatRoutes(app, ctx) {
     return c.json({
       ok: true,
       agentId: agentId || null,
-      config: { contextMode: cfg.contextMode, windowSize: cfg.windowSize, includeThinking: cfg.includeThinking, model: cfg.model || null },
+      config: { contextMode: cfg.contextMode, windowSize: cfg.windowSize, includeThinking: cfg.includeThinking, model: cfg.model || null, selfPrompt: cfg.selfPrompt ?? '' },
       mainSession,
       hostPatch,
       rendererPatch,
@@ -251,6 +267,19 @@ export default function registerSideChatRoutes(app, ctx) {
         createdAt: Date.now(),
         updatedAt: Date.now(),
       });
+      // 创建时快照（2026-08-16 用户设计）：立即采集主对话上下文，快照即完整。
+      // full = 全部轮原文；windowed = 最近 N 轮原文 + 更早轮摘要（摘要此刻调一次模型）。
+      // 无主会话/读取失败时不阻断创建：mainCtx 缺失，首次发消息时自动补建。
+      if (boundMain && created?.id) {
+        try {
+          const snap = await buildMainSnapshot(pctx, c, cfg, boundMain);
+          if (snap) {
+            created = (await loadStore()).upsertSession(pctx.dataDir, { id: created.id, mainCtx: snap });
+          }
+        } catch {
+          // 快照失败不阻断创建（首次发消息时补）
+        }
+      }
     } catch (e) {
       return c.json({ ok: false, error: `创建会话失败：${e?.message ?? e}` });
     }
@@ -299,18 +328,21 @@ export default function registerSideChatRoutes(app, ctx) {
     // 惰性归属：发消息前未绑定/绑定无效的旧数据自动绑定到当前主会话（与打开详情行为一致）
     await lazyBindUnbound(pctx, c, entry);
 
-    // 1. 采集主对话参考上下文（官方通道）
-    // 归属优先：参考上下文来自 boundMain 归属的主会话（树叶认树枝），无效才回退原解析逻辑
+    // 1. 采集主对话参考上下文（快照+增量机制，2026-08-16）：
+    //    创建时已快照（mainCtx），此处只同步主对话新增的完整轮次并追加，然后注入累积文本。
+    //    归属优先：同步源是 boundMain 归属的主会话（树叶认树枝），无效才回退原解析逻辑。
     const cfg = await readConfig(pctx);
-    const mainInfo = await collectMainContext(pctx, c, cfg, {
-      sessionPath: await resolveContextSessionPath(pctx, c, entry),
-    });
+    const mainInfo = await syncMainContext(pctx, c, entry, cfg);
     const reference = mainInfo.reference;
     const mainStats = mainInfo.stats;
 
     // 2. 人格跟随：会话绑定主对话 agent，官方管道自动注入其完整人格，
-    // 这里只注入边界声明，不重复注入 persona。
+    //    这里只注入边界声明与「自我意识」提示词（用户可编辑，见设置面板）。
     const systemBlocks = [
+      // 自我意识块（用户可编辑；空串/未配置则不注入，走原有机制）
+      ...(cfg.selfPrompt && String(cfg.selfPrompt).trim()
+        ? [{ label: 'sidechat-identity', text: String(cfg.selfPrompt).trim() }]
+        : []),
       {
         label: 'boundary',
         text:
@@ -448,13 +480,15 @@ export default function registerSideChatRoutes(app, ctx) {
     const body = await c.req.json().catch(() => ({}));
     const cfg = await readConfig(pctx);
     const updates = {};
-    for (const k of ['contextMode', 'windowSize', 'includeThinking', 'model']) {
+    for (const k of ['contextMode', 'windowSize', 'includeThinking', 'model', 'selfPrompt']) {
       if (body[k] !== undefined) {
         let v = body[k];
         // 防御：windowSize 收进 1..200（0 值会让 buildReferenceContext 的 slice(-0)=全量，
-        // 与窗口语义不符，REVIEW2 发现 8）；includeThinking 强制布尔，避免字符串真值
+        // 与窗口语义不符，REVIEW2 发现 8）；includeThinking 强制布尔，避免字符串真值；
+        // selfPrompt 纯文本，trim + 4000 字上限（空串=清空，走原有机制）
         if (k === 'windowSize') v = Math.min(200, Math.max(1, Number(v) || 30));
         if (k === 'includeThinking') v = !!v;
+        if (k === 'selfPrompt') v = String(v ?? '').slice(0, 4000);
         cfg[k] = v;
         updates[k] = v;
       }
@@ -537,12 +571,13 @@ async function readConfig(ctx) {
     windowSize: 30,
     includeThinking: true,
     model: '',
+    selfPrompt: DEFAULT_SELF_PROMPT,
     providerImportJson: '',
     importedProviders: {},
   };
   const cur = ctx.config?.get ? await ctx.config.get() : null;
   if (cur && typeof cur === 'object') {
-    for (const k of ['contextMode', 'windowSize', 'includeThinking', 'model', 'providerImportJson']) {
+    for (const k of ['contextMode', 'windowSize', 'includeThinking', 'model', 'selfPrompt', 'providerImportJson']) {
       if (cur[k] !== undefined) base[k] = cur[k];
     }
   }
@@ -809,6 +844,93 @@ async function collectMainContext(pctx, c, cfg, opts = {}) {
     reference,
     pending,
     stats: { rounds: roundCount, mode: cfg.contextMode, viaApi, pending, file: path.basename(sessionPath), ...(apiError ? { apiError } : {}) },
+  };
+}
+
+// ---------- 快照 + 增量机制（2026-08-16 用户设计） ----------
+
+// 读主会话轮次：官方通道优先，失败兜底直接解析 JSONL。
+// 返回 { rounds, viaApi, apiError }。
+async function readMainRounds(pctx, sessionPath) {
+  let viaApi = true;
+  let apiError = null;
+  try {
+    const res = await pctx.bus.request('session:history', { sessionPath, limit: 500 });
+    return { rounds: (await loadLib()).roundsFromHistory(res?.messages), viaApi, apiError };
+  } catch (e) {
+    viaApi = false;
+    apiError = String(e?.message ?? e);
+    return { rounds: (await loadLib()).parseSessionJsonl(sessionPath), viaApi, apiError };
+  }
+}
+
+// 创建会话时的初始快照：full = 全部轮原文；windowed = 最近 N 轮原文 + 更早轮摘要（此刻调一次模型）。
+// 返回 { text, lastRoundCount, mainSessionPath, mode }；无轮次返回 null。
+// lastRoundCount 只计「配对完整的轮数」（pending 轮等配对完成后再进增量）。
+async function buildMainSnapshot(pctx, c, cfg, sessionPath) {
+  const lib = await loadLib();
+  const { rounds } = await readMainRounds(pctx, sessionPath);
+  if (!rounds.length) return null;
+  const fullCount = lib.completedRounds(rounds);
+  const windowSize = cfg.contextMode === 'full' ? Infinity : Math.max(1, Number(cfg.windowSize) || 30);
+  const recent = rounds.slice(-windowSize);
+  const old = rounds.slice(0, Math.max(0, rounds.length - windowSize));
+  let text = lib.buildReferenceContext(recent, cfg);
+  if (old.length && cfg.contextMode !== 'full') {
+    const summary = await lib.summarizeOld(pctx, old).catch(() => null);
+    if (summary) text = `【主对话早期轮次摘要】\n${summary}\n\n${text}`;
+  }
+  return { text, lastRoundCount: fullCount, mainSessionPath: sessionPath, mode: cfg.contextMode };
+}
+
+// 发消息时同步：快照缺失/来源变化则重建；否则只追加主对话新增的完整轮次（pending 轮等完成）。
+// 返回结构兼容 collectMainContext（stats.rounds/pending/viaApi/mode 供前端指示条）。
+async function syncMainContext(pctx, c, entry, cfg) {
+  const lib = await loadLib();
+  const sessionPath = await resolveContextSessionPath(pctx, c, entry);
+  if (!sessionPath) {
+    return { ok: false, error: '未找到主会话', reference: '', stats: { rounds: 0 } };
+  }
+  const { rounds, viaApi, apiError } = await readMainRounds(pctx, sessionPath);
+  const fullCount = lib.completedRounds(rounds);
+  const lastRound = rounds[rounds.length - 1];
+  const pending = !!(lastRound && lastRound.user && !lastRound.assistant);
+  let mainCtx = entry.mainCtx;
+  // 快照缺失 / 来源会话变化（boundMain 失效重绑等）/ 模式变化 → 重建
+  if (!mainCtx || mainCtx.mainSessionPath !== sessionPath || mainCtx.mode !== cfg.contextMode) {
+    mainCtx = await buildMainSnapshot(pctx, c, cfg, sessionPath);
+    if (mainCtx) await (await loadStore()).upsertSession(pctx.dataDir, { id: entry.id, mainCtx });
+  }
+  if (!mainCtx) {
+    return {
+      ok: true,
+      reference: '',
+      stats: { rounds: fullCount, viaApi, pending, file: path.basename(sessionPath), ...(apiError ? { apiError } : {}) },
+    };
+  }
+  // 增量追加：只追配对完整的轮次，原文形式追加（不重复 header，轮次序号接着编号）
+  if (fullCount > mainCtx.lastRoundCount) {
+    const added = rounds.slice(mainCtx.lastRoundCount, fullCount);
+    if (added.length) {
+      const append = lib.formatRounds(added, cfg, mainCtx.lastRoundCount);
+      mainCtx.text = mainCtx.text ? `${mainCtx.text}\n\n${append}` : append;
+      mainCtx.lastRoundCount = fullCount;
+      await (await loadStore()).upsertSession(pctx.dataDir, { id: entry.id, mainCtx });
+    }
+  }
+  return {
+    ok: true,
+    reference: mainCtx.text,
+    stats: {
+      rounds: fullCount,
+      viaApi,
+      pending,
+      file: path.basename(sessionPath),
+      mode: cfg.contextMode,
+      snapshot: true,
+      lastSynced: mainCtx.lastRoundCount,
+      ...(apiError ? { apiError } : {}),
+    },
   };
 }
 
