@@ -1,7 +1,7 @@
 # SideChat 辅助对话
 
 ![License](https://img.shields.io/badge/license-MIT-green)
-![Version](https://img.shields.io/badge/version-v0.3.0-blue)
+![Version](https://img.shields.io/badge/version-v0.4.0-blue)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
 ![Hana](https://img.shields.io/badge/HanaAgent-0.82%2B-orange)
 
@@ -22,6 +22,9 @@ HanaAgent（OpenHanako）的侧边栏小对话插件：一个**纯 LLM 问答**�
 - **转送交互**：点面板顶部「主对话」指示条查看主对话最近轮次，点「引入」把某一轮贴进输入框（带引用标记）。
 - **健康自检**：面板加载失败或设置里可运行诊断（agentId/主会话定位/host 补丁/renderer 补丁/缓存/配置一键体检）。
 - **自我意识提示词**：设置面板可编辑，定义辅助对话身份与行为准则（默认值已内置）。
+- **markdown 渲染**：回复与历史消息支持 markdown（标题/粗斜体/删除线/行内代码/代码块+语言标注+一键复制/引用/列表/链接/表格/水平线），原始 HTML 与危险协议（javascript: 等）一律拦截。
+- **代码高亮**：JS/TS/JSON 代码块极简语法高亮（关键字/字符串/注释/数字），零外部依赖。
+
 
 ## 安装
 
@@ -92,6 +95,8 @@ node debug\smoke-test.cjs
 - 模型调用走 Hana 官方管道：`session:create` 传 `model: {id, provider}`（非公开契约的扩展字段，升级需回归验证）。
 
 ## 已知限制
+
+- **markdown 为极简实现**：非完整 CommonMark 兼容，覆盖日常 90% 场景（表格/嵌套语法等边缘情况可能不渲染）。
 
 - **附件像素级理解未实现**：图片以文本引用（`[SessionFile]` + 路径）进入参考上下文，看不到像素内容。`session:send` 无多模态注入。
 - **「不动电脑」靠提示词约束**：会话绑定主对话 agent 会继承其工具集；Hana 无「完全禁用工具」机制。当前靠 boundary 强约束压制，实测诱导测试通过，但属概率性服从，非硬隔离。
