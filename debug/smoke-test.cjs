@@ -41,6 +41,7 @@ const SYNTAX_FILES = [
   'lib/patch-check.mjs',
   'assets/app.js',
   'index.js',
+  'debug/verify.js',
   'debug/smoke-test.cjs',
 ];
 
