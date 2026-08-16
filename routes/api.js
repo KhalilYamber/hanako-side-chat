@@ -878,7 +878,13 @@ async function buildMainSnapshot(pctx, c, cfg, sessionPath) {
   const windowSize = cfg.contextMode === 'full' ? Infinity : Math.max(1, Number(cfg.windowSize) || 30);
   const recent = rounds.slice(-windowSize);
   const old = rounds.slice(0, Math.max(0, rounds.length - windowSize));
-  let text = lib.buildReferenceContext(recent, cfg);
+  // full 模式总量自适应：主对话几百轮时每轮 4000 字会让注入文本远超模型上下文
+  // （被模型侧截断，用户看到「还是不全」）。8 万字符 ≈ 4 万 token 总量预算，
+  // 按轮数均摊每轮上限（每轮最低 500 字），保证覆盖全部轮次且总量可控。
+  let text = lib.buildReferenceContext(recent, {
+    ...cfg,
+    maxTotalChars: cfg.contextMode === 'full' ? 80000 : undefined,
+  });
   if (old.length && cfg.contextMode !== 'full') {
     const summary = await lib.summarizeOld(pctx, old).catch(() => null);
     if (summary) text = `【主对话早期轮次摘要】\n${summary}\n\n${text}`;

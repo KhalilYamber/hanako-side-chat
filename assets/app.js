@@ -83,7 +83,7 @@ function formatDiagnostics(d) {
   const lines = [];
   lines.push(`agentId：${d.agentId ? '✓ ' + d.agentId : '✗ 缺失（请从主对话重新打开面板，host 会附带 agentId）'}`);
   const ms = d.mainSession;
-  lines.push(`主会话定位：${ms?.found ? `✓ ${ms.rounds} 轮（${ms.viaApi ? '官方通道' : '文件兑底'}${ms.pending ? '，回复中' : ''}）` : `✗ ${ms?.error ?? '未找到'}（主对话暂无内容或 agents 目录异常）`}`);
+  lines.push(`主会话定位：${ms?.found ? `✓ ${ms.rounds} 轮（${ms.viaApi ? '官方通道(兜底)' : '文件直读'}${ms.pending ? '，回复中' : ''}）` : `✗ ${ms?.error ?? '未找到'}（主对话暂无内容或 agents 目录异常）`}`);
   const hp = d.hostPatch;
   if (hp?.status === 'pass') lines.push(`host 补丁：✓ ${hp.detail ?? '生效中'}`);
   else if (hp?.status === 'fail') lines.push(`host 补丁：✗ ${hp.detail ?? '丢失'}（升级会覆盖 artifacts，需重新打补丁：在 bundle 的 jot 集合补回 "token"，详见 debug/check-host-patch.js）`);
@@ -476,6 +476,12 @@ async function newSession() {
   if (state.creating) return;
   state.creating = true;
   $('btn-new').disabled = true;
+  // 创建反馈：windowed 模式创建时后端要调一次模型生成快照摘要（可能 5~30 秒），
+  // 按钮置灰无提示会显得像卡死（2026-08-16 审视发现）
+  const newBtn = $('btn-new');
+  const originalText = newBtn.textContent;
+  newBtn.textContent = '创建中…';
+  newBtn.title = '正在创建并生成主对话上下文快照…';
   try {
     const res = await api('/api/sessions', { method: 'POST', body: JSON.stringify({}) });
     if (!res.ok) {
@@ -487,6 +493,7 @@ async function newSession() {
     await openSession(res.session.id);
   } finally {
     state.creating = false;
+    newBtn.textContent = originalText;
     updateNewBtn(); // 恢复按钮态：新会话为空时保持置灰（防连点空壳）
   }
 }

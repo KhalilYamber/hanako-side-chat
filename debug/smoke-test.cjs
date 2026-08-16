@@ -196,8 +196,10 @@ function runIndexCheck() {
 
   // 未绑定 = 无 boundMain 字段；sessionPath 指向文件可能已被清理，仅报信息
   const unbound = sessions.filter((s) => s && !s.boundMain).length;
+  // 快照状态（2026-08-16 快照+增量机制）：有 mainCtx 的会话数（信息级）
+  const withSnapshot = sessions.filter((s) => s && s.mainCtx && typeof s.mainCtx.text === 'string' && s.mainCtx.text.length > 0).length;
   const missingFiles = sessions.filter((s) => s && s.sessionPath && !fs.existsSync(s.sessionPath)).length;
-  const detail = `会话总数 ${sessions.length}，未绑定主对话 ${unbound}，sessionPath 指向文件缺失 ${missingFiles} 个（已清理属正常，仅信息）`;
+  const detail = `会话总数 ${sessions.length}，未绑定主对话 ${unbound}，sessionPath 指向文件缺失 ${missingFiles} 个（已清理属正常，仅信息），已有上下文快照 ${withSnapshot} 个`;
 
   if (bad.length > 0) {
     return {
