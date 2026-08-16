@@ -34,7 +34,10 @@ export default function registerWidgetRoutes(app, ctx) {
       return c.html('<h1>side-chat：widget 模板缺失</h1>', 500);
     }
     if (isSafeThemeCss(css, c.req.url)) {
-      html = html.replace('</head>', `  <link rel="stylesheet" href="${css}">\n</head>`);
+      // REVIEW3 M6：注入必须用 URL 解析后的序列化结果（已 percent-encode），
+      // 不能用原始 query 值——原始值可含 `"<>` 闭合 href 属性造成反射型 XSS（已实证）
+      const safeHref = new URL(css, c.req.url).href;
+      html = html.replace('</head>', `  <link rel="stylesheet" href="${safeHref}">\n</head>`);
     }
     if (theme && /^[a-zA-Z0-9_-]{1,64}$/.test(theme)) {
       html = html.replace('<html lang="zh-CN">', `<html lang="zh-CN" data-theme="${theme}">`);
