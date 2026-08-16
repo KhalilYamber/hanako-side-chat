@@ -2,19 +2,23 @@
   "manifestVersion": 1,
   "id": "side-chat",
   "name": "Side Chat 辅助对话",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "侧边栏辅助对话：纯 LLM 问答面板，上下文 = 当前 agent 人格 + 主对话一问一答与思考过程（参考上下文，自动同步）+ 自身对话历史，两套上下文严格分离。无任何电脑操作能力。供应商支持从主设置一键导入。",
   "author": "Antsiu",
   "minAppVersion": "0.82.0",
   "trust": "full-access",
-  "activationEvents": ["onStartup"],
+  "activationEvents": [
+    "onStartup"
+  ],
   "capabilities": [
     "session",
     "agent",
     "model.sample"
   ],
   "ui": {
-    "hostCapabilities": ["clipboard.writeText"]
+    "hostCapabilities": [
+      "clipboard.writeText"
+    ]
   },
   "contributes": {
     "widget": {
@@ -44,7 +48,10 @@
         },
         "contextMode": {
           "type": "string",
-          "enum": ["windowed", "full"],
+          "enum": [
+            "windowed",
+            "full"
+          ],
           "default": "windowed",
           "title": "主对话参考上下文策略",
           "description": "windowed=只带最近 N 轮+旧轮摘要（省 token）；full=全量带上。效果不满意可随时切换。"
