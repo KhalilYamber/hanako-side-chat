@@ -16,7 +16,7 @@ body {
   background: var(--bg-panel, #fafafa);
 }
 #session-picker { flex: 1; display: flex; gap: 4px; min-width: 0; }
-/* ：触发器 + 列表浮层容器（position:relative 作为列表绝对定位的参照） */
+/* 触发器 + 列表浮层容器（position:relative 作为列表绝对定位的参照） */
 #session-picker-main { position: relative; flex: 1; min-width: 0; display: flex; }
 #session-trigger {
   flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px;
@@ -91,7 +91,7 @@ body {
 #btn-send:disabled { opacity: .5; cursor: wait; }
 
 .hidden { display: none !important; }
-/* ：会话右键菜单：垂直列表浮层，fixed 定位（JS 控制在视口内自动收拢），样式对齐现有暗色控件 */
+/* 会话右键菜单：垂直列表浮层，fixed 定位（JS 控制在视口内自动收拢），样式对齐现有暗色控件 */
 #ctx-menu {
   position: fixed; z-index: 100; min-width: 132px;
   background: var(--bg-card, #fff);
@@ -107,7 +107,7 @@ body {
 }
 #ctx-menu button:hover { background: var(--bg-subtle, #f0f0f0); }
 #ctx-menu button.danger:hover { background: #fdeeee; color: #e05555; }
-/* ：两态确认 armed 态：文本变「确认删除？」，danger 加深（菜单项原地显示，不关闭菜单） */
+/* 两态确认 armed 态：文本变「确认删除？」，danger 加深（菜单项原地显示，不关闭菜单） */
 #ctx-menu button.danger.armed { color: #e05555; font-weight: 600; background: #fdeeee; }
 #settings-panel, #preview-panel {
   position: fixed; inset: 0; z-index: 10;
@@ -118,9 +118,9 @@ body {
 #settings-panel label { display: block; }
 #settings-panel .row { flex-direction: row; align-items: center; display: flex; gap: 6px; }
 #settings-panel select, #settings-panel input[type=number] { width: 100%; padding: 4px; border: 1px solid var(--border, #ddd); border-radius: 6px; background: var(--bg-input, #fff); color: var(--text, #222); }
-/* ：辅助对话自我意识提示词：说明文字（小字灰）+ 编辑区（暗色对齐现有设置控件，宽度占满面板） */
+/* 辅助对话自我意识提示词：说明文字（小字灰）+ 编辑区（暗色对齐现有设置控件，宽度占满面板） */
 #settings-panel .settings-hint { font-size: 11px; color: var(--text-dim, #888); line-height: 1.5; margin: 0; }
-/* ：编辑框加大：min/max-height 限幅保证默认提示词可完整显示、超长内部滚动，保留竖向手动拖拽 */
+/* 编辑框加大：min/max-height 限幅保证默认提示词可完整显示、超长内部滚动，保留竖向手动拖拽 */
 #set-self-prompt {
   width: 100%; box-sizing: border-box; resize: vertical;
   min-height: 180px; max-height: 320px; overflow-y: auto;
@@ -130,7 +130,7 @@ body {
   font-family: var(--font-mono, Consolas, "Courier New", monospace);
   font-size: 12px;
 }
-/* ：暗色滚动条：跟随现有主题边框/弱化色变量，简洁实现 */
+/* 暗色滚动条：跟随现有主题边框/弱化色变量，简洁实现 */
 #set-self-prompt::-webkit-scrollbar { width: 8px; }
 #set-self-prompt::-webkit-scrollbar-track { background: transparent; }
 #set-self-prompt::-webkit-scrollbar-thumb { background: var(--border, #ccc); border-radius: 4px; }

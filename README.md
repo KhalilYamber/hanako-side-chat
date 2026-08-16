@@ -1,6 +1,6 @@
 # SideChat 辅助对话
 
-HanaAgent（OpenHanako）的侧边栏小对话插件：一个**纯 LLM 问答**面板，模仿 AI 客户端 的辅助对话体验。
+HanaAgent（OpenHanako）的侧边栏小对话插件：一个**纯 LLM 问答**面板，为主对话提供随时的旁路问答体验。
 
 它只会聊天，没有操作能力：不能调工具、不能改文件、不能跑命令。动手的事只归主对话。
 
@@ -64,7 +64,7 @@ node debug\apply-sessionpath-patch.cjs
 node debug\smoke-test.cjs
 ```
 
-补丁状态也可在面板「设置 → 运行诊断」里查看。这两处契约缺口已计划向 OpenHanako 仓库（liliMozi/openhanako）上报（见 ROADMAP ），官方支持后会移除补丁依赖。
+补丁状态也可在面板「设置 → 运行诊断」里查看。这两处契约缺口值得向 OpenHanako 仓库（liliMozi/openhanako）上报，官方支持后会移除补丁依赖。
 
 ## 工作原理（简述）
 

@@ -23,7 +23,7 @@
 - 补丁检查/重打脚本：`debug/check-host-patch.js`、`debug/check-renderer-patch.js`、`debug/apply-sessionpath-patch.cjs`（幂等，自动备份）。
 
 ### 修复
-- **REVIEW3 修复轮**（外部协作 审查 22 条，修复 13 项）：manifest 声明 selfPrompt（设置保存曾可能整体失败）；快照只渲染配对轮（pending 轮不重复注入）；store 原子复合更新（并发不丢轮）；轮数回退重建；全局轮次序号；预算计入 thinking；主题 CSS 反射型 XSS（实证）；主输入框 IME 误发送保护；设置保存失败提示；删除武装重置；创建超时放宽 90 秒；pending 空轮过滤。
+- **安全与健壮性修复轮**（第三方代码审查 22 条，修复 13 项）：manifest 声明 selfPrompt（设置保存曾可能整体失败）；快照只渲染配对轮（pending 轮不重复注入）；store 原子复合更新（并发不丢轮）；轮数回退重建；全局轮次序号；预算计入 thinking；主题 CSS 反射型 XSS（实证）；主输入框 IME 误发送保护；设置保存失败提示；删除武装重置；创建超时放宽 90 秒；pending 空轮过滤。
 - **审视修复轮**：SSE 自清理兜底（10 分钟超时，防泄漏）；缓存键含 sessionPath（修切主对话滞后）；normalizeHistory 过滤空 user 消息；mtime 兜底按 agent 过滤；full 模式总量自适应压缩（8 万字符预算）。
 - 模块缓存坑处理（reload 后静态 import 不失效 → 动态 import 带时间戳）。
 
@@ -41,11 +41,11 @@
 
 ### 修复
 - POST /messages 缓存写入与 collectMainContext 冲突隐患（摘要失败留下错配 lastRoundCount 导致误复用旧摘要，已删该段缓存写入，统一由 collectMainContext 维护）。
-- 外部协作 审查 16 条发现：归属校验补全、会话识别标注、空消息过滤、session_busy 提示、缓存隔离、能力清理等。
+- 第三方代码审查 16 条发现：归属校验补全、会话识别标注、空消息过滤、session_busy 提示、缓存隔离、能力清理等。
 
 ### 清理
-- 4 个 测试 测试会话文件 + 旧缓存移入回收目录（可恢复）；索引 16 → 12。
-- 纠正 `agents\sidechat` 为活跃 agent（）的误判。
+- 4 个测试会话文件 + 旧缓存移入回收目录（可恢复）；索引 16 → 12。
+- 纠正 `agents\sidechat` 目录为活跃 agent 的误判（保留）。
 
 ### 内部
 - 版本 0.1.0 → 0.2.0（manifest）；git 基线。

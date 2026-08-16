@@ -3,7 +3,7 @@
 // 核心逻辑见 ../lib/patch-check.mjs（scanSetLiterals / isJotPatch / checkHostPatch）。
 //
 // 用法：node check-host-patch.js [bundle 路径] [--home <path>]
-//   --home：.hanako 家目录（Hana 数据根）；缺省按 环境变量 HANA_HOME → SIDECHAT_HOME → 本机默认 解析。
+//   --home：.hanako 家目录（Hana 数据根）；缺省按 环境变量 HANA_HOME → SIDECHAT_HOME → 用户家目录 解析。
 //   env/默认兜底仅在没有 bundle 位置参数（需要自动定位）时生效；给了 bundle 路径时只看 --home。
 //   缺省路径：自动定位 <HOME>/artifacts/server/<最新>/bundle/index.js
 // 附带自测：node check-host-patch.js --selftest（内存样本验证扫描与判定逻辑，不落盘）
@@ -20,7 +20,7 @@ const path = require('path');
 
 const BAK_NAME = 'index.js.bak-20260815';
 // 本机默认，发布场景用 env/参数覆盖
-const DEFAULT_HOME = 'C:\\Users\\<USER>\\.hanako';
+const DEFAULT_HOME = path.join(require('os').homedir(), '.hanako');
 
 function truncate(s, n) {
   return s.length > n ? s.slice(0, n) + ' …' : s;

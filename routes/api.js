@@ -15,7 +15,7 @@ async function loadStore() {
   return _store ??= import(`../lib/store.js?t=${Date.now()}`);
 }
 
-// 默认「自我意识」提示词（维护者撰写，2026-08-16）：辅助对话的身份定位。
+// 默认「自我意识」提示词：辅助对话的身份定位。
 // 用户可在设置面板编辑（配置字段 selfPrompt），发送时作为附加 system 块注入，
 // 不替换主对话/辅助对话共用的原有系统提示词机制。
 const DEFAULT_SELF_PROMPT =
@@ -48,7 +48,7 @@ export default function registerSideChatRoutes(app, ctx) {
     return c.json({ ok: true, config: cfg, sessions: visible, main });
   });
 
-  // ---------- 健康自检（，借鉴 DSHana 诊断思路） ----------
+  // ---------- 健康自检（借鉴 DSHana 诊断思路） ----------
 
   app.get('/api/diagnostics', async (c) => {
     const agentId = requestAgentId(c);
@@ -231,7 +231,7 @@ export default function registerSideChatRoutes(app, ctx) {
     const body = await c.req.json().catch(() => ({}));
     let created = null;
     try {
-      // 模型选择（测试）：设置里选的模型（provider/model）通过 session:create 的 model 参数绑定，
+      // 模型选择：设置里选的模型（provider/model）通过 session:create 的 model 参数绑定，
       // 实测生效（会话 model_change 记录正确）。绑定主对话 agent（人格由官方管道注入）。
       const cfg = await readConfig(pctx);
       const modelSpec = parseModelSpec(cfg.model);
@@ -261,7 +261,7 @@ export default function registerSideChatRoutes(app, ctx) {
         sessionPath,
         // 绑定主会话：参考上下文来源路径（前端「绑定 ≠ 当前主会话」时提示一键切换）
         boundMain,
-        // agent 级归属：记录创建时的主对话 agent，列表据此过滤（维护者域/空老师域各自独立）
+        // agent 级归属：记录创建时的主对话 agent，列表据此过滤（按 agent 域隔离）
         agentId: requestAgentId(c) || undefined,
         title: body.title || `辅助对话 ${new Date().toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })}`,
         createdAt: Date.now(),
@@ -378,7 +378,7 @@ export default function registerSideChatRoutes(app, ctx) {
 
     // 摘要缓存由 collectMainContext 统一维护（摘要成功即写，含 lastPending/mainSessionPath）。
     // 这里不再重复写缓存：无条件更新 lastRoundCount 会在摘要失败时留下与 summaryText
-    // 错配的计数，导致下次误复用旧摘要（外部协作 审查发现 1 的验收补充）。
+    // 错配的计数，导致下次误复用旧摘要（审查发现的验收补充）。
 
     return c.json({ ok: true, mainStats });
   });
@@ -678,7 +678,7 @@ async function resolveMainSessionPath(pctx, c, skipMainPath = false) {
 }
 
 // 白名单：路径必须是 <HOME>/agents/<agentId>/sessions/*.jsonl 的绝对路径
-// （防御 query 注入任意路径读取，对应 外部协作 审查发现 6）
+// （防御 query 注入任意路径读取）
 function isAgentSessionPath(pctx, p, agentId) {
   try {
     if (typeof p !== 'string' || !p.includes('.jsonl')) return false;

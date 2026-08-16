@@ -3,7 +3,7 @@
 // 补丁把 currentSessionPath 注入 iframe URL，server 的 jot 集合放行该参数，
 // 插件即可拿到「当前打开的主对话」真实路径（根治辅助会话串主对话）。
 // 用法：node debug/apply-sessionpath-patch.cjs [--home <path>]
-//   --home：.hanako 家目录（Hana 数据根）；缺省按 环境变量 HANA_HOME → SIDECHAT_HOME → 本机默认 解析。
+//   --home：.hanako 家目录（Hana 数据根）；缺省按 环境变量 HANA_HOME → SIDECHAT_HOME → 用户家目录 解析。
 //   renderer/server 版本目录与 renderer 产物文件名自动发现（取版本号/字典序最大者），
 //   发现失败时报错退出（退出码 1），不静默降级。
 // 幂等：已打补丁时跳过；先备份 .bak-20260816-2。
@@ -13,7 +13,7 @@ const fs = require('fs');
 const path = require('path');
 
 // 本机默认，发布场景用 env/参数覆盖
-const DEFAULT_HOME = 'C:\\Users\\<USER>\\.hanako';
+const DEFAULT_HOME = path.join(require('os').homedir(), '.hanako');
 const BAK = '.bak-20260816-2';
 
 // ---------- home 解析：CLI 参数 > 环境变量（HANA_HOME → SIDECHAT_HOME）> 本机默认 ----------

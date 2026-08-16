@@ -18,7 +18,7 @@
     <header id="topbar">
       <div id="session-picker">
         <div id="session-picker-main">
-          <!-- ：自定义会话选择器：触发器显示当前会话标题（含未绑定前缀），点击展开下方列表浮层 -->
+          <!-- 自定义会话选择器：触发器显示当前会话标题（含未绑定前缀），点击展开下方列表浮层 -->
           <button id="session-trigger" title="选择会话"><span id="session-trigger-label">（暂无会话，点 ＋ 新建）</span></button>
           <!-- 重命名编辑条：编辑态隐藏触发器并显示此条（含输入框 + 保存/取消 + 就地错误提示） -->
           <div id="rename-bar" class="hidden">
@@ -57,7 +57,7 @@
     </footer>
   </div>
 
-  <!-- /：会话右键菜单：右键触发器（当前会话）或列表项（目标会话）弹出（fixed 浮层，视口内自动收拢），仅「重命名/删除」两项 -->
+  <!-- 会话右键菜单：右键触发器（当前会话）或列表项（目标会话）弹出（fixed 浮层，视口内自动收拢），仅「重命名/删除」两项 -->
   <div id="ctx-menu" class="hidden">
     <button id="ctx-menu-rename">✏️ 重命名</button>
     <button id="ctx-menu-del" class="danger">🗑 删除</button>
@@ -77,7 +77,7 @@
     </label>
     <label class="row"><input id="set-thinking" type="checkbox"> 包含主对话思考过程</label>
     <hr>
-    <!-- ：辅助对话自我意识提示词编辑区：置于上下文设置之后、模型选择（供应商）之前，随「保存设置」一并提交 -->
+    <!-- 辅助对话自我意识提示词编辑区：置于上下文设置之后、模型选择（供应商）之前，随「保存设置」一并提交 -->
     <h4>辅助对话自我意识提示词</h4>
     <p class="settings-hint">定义辅助对话的身份与行为准则，作为附加系统提示词注入（不替换原有系统提示词）。默认内容由插件提供，可自由编辑；清空则恢复内置默认。</p>
     <textarea id="set-self-prompt" rows="12"></textarea>

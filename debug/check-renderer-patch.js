@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 // debug/check-renderer-patch.js —— 「sessionPath 注入」补丁检测脚本（纯 Node.js CJS，无第三方依赖）
-// 背景：维护者 2026-08-16 给 Hana 打的根治补丁，让 host 的 widget iframe URL 带上当前主会话路径
+// 背景：给 Hana 打的根治补丁，让 host 的 widget iframe URL 带上当前主会话路径
 // （sessionPath 参数），修复 side-chat 插件拿不到「当前打开的主对话」的问题。Hana 升级会整体
 // 覆盖 artifacts 目录（renderer/server 全部文件被替换），补丁随之丢失，需要本脚本定期复检。
 //
 // 用法：node debug/check-renderer-patch.js [homeDir]
 //   homeDir 解析：位置参数 > 环境变量（HANA_HOME → SIDECHAT_HOME）> 本机默认
-//   （缺省 homeDir = C:\Users\<USER>\.hanako，与 apply-sessionpath-patch.cjs 保持一致）
+//   （缺省 homeDir = <home>/.hanako，可用 HANA_HOME / SIDECHAT_HOME 环境变量覆盖）
 //   renderer/server 版本目录与 renderer 产物文件名自动发现（取版本号/字典序最大者），
 //   发现失败时报错退出（退出码 1），不静默降级。
 // 附带自测：node debug/check-renderer-patch.js --selftest（内存样本，不落盘）
@@ -22,7 +22,7 @@ const fs = require('fs');
 const path = require('path');
 
 // 本机默认，发布场景用 env/参数覆盖
-const DEFAULT_HOME = 'C:\\Users\\<USER>\\.hanako';
+const DEFAULT_HOME = path.join(require('os').homedir(), '.hanako');
 
 // ---------- home 解析：CLI 参数 > 环境变量（HANA_HOME → SIDECHAT_HOME）> 本机默认 ----------
 

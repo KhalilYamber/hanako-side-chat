@@ -63,7 +63,7 @@ async function api(path, opts = {}) {
   }
 }
 
-// 加载阶段错误可见化：面板打开即失败时，拉取诊断信息并渲染为清单（，学 DSHana 诊断思路）
+// 加载阶段错误可见化：面板打开即失败时，拉取诊断信息并渲染为清单（借鉴 DSHana 诊断思路）
 function showFatal(error) {
   $('messages').innerHTML = '';
   const el = document.createElement('div');
@@ -99,7 +99,7 @@ function formatDiagnostics(d) {
 
 // ---------- 渲染 ----------
 
-// ---------- 会话选择器（：自定义列表替代原生 select） ----------
+// ---------- 会话选择器（自定义列表替代原生 select） ----------
 // 排序与旧 renderSessionSelect 一致：未绑定（旧数据）分组排后，组内保持 state.sessions 原序
 // （后端按 updatedAt 倒序返回）；排序用稳定 sort，同组相对顺序不变。
 function orderedSessions() {
@@ -150,14 +150,14 @@ function isSessionListOpen() {
 }
 
 function openSessionList() {
-  closeCtxMenu(); // 打开列表时同步关掉旧菜单（：列表收起/打开都与菜单互斥）
+  closeCtxMenu(); // 打开列表时同步关掉旧菜单（列表收起/打开都与菜单互斥）
   $('session-list').classList.remove('hidden');
   renderSessionList(); // 展开后再渲染内容（renderSessionList 仅在展开态重建列表，反映最新数据）
 }
 
 function closeSessionList() {
   $('session-list').classList.add('hidden');
-  closeCtxMenu(); // ：列表收起时同步关闭菜单
+  closeCtxMenu(); // 列表收起时同步关闭菜单
 }
 
 function toggleSessionList() {
@@ -387,7 +387,7 @@ async function pollStateOnce() {
   const idSeq = (list) => (list ?? []).map((s) => `${s.id}:${s.unbound ? 'u' : 'b'}`).join(',');
   if (idSeq(res.sessions) !== idSeq(state.sessions)) {
     state.sessions = res.sessions;
-    // ：列表浮层打开期间不重渲染（避免展开态被打断/闪动），触发器标题不受影响；
+    // 列表浮层打开期间不重渲染（避免展开态被打断/闪动），触发器标题不受影响；
     // 关闭后下一次打开时由 openSessionList 重渲染，自然反映最新列表（取舍见 A5 简单方案）。
     if (!isSessionListOpen()) renderSessionList();
     // 会话失配回退：列表刷新后当前选中会话可能已被隔离过滤/删除（主对话切换/隔离），
@@ -421,7 +421,7 @@ async function loadState() {
 let openSeq = 0;
 
 async function openSession(id) {
-  closeSessionList(); // ：会话切换（含轮询/删除/新建等一切路径）时收起列表并关闭右键菜单
+  closeSessionList(); // 会话切换（含轮询/删除/新建等一切路径）时收起列表并关闭右键菜单
   // 防御：列表刷新后 currentId 指向的会话可能已被隔离过滤/删除（主对话切换/隔离导致），
   // 触发器仍显示旧标题但 currentId 是旧值，后续发消息/删除会打到不可见会话。
   // 这里统一回退：id 不在列表且列表非空 → 打开第一个；列表为空 → 空态。
@@ -500,7 +500,7 @@ async function newSession() {
   }
 }
 
-// ：两态删除的 armed 状态按目标会话 id 独立存储（不同目标互不干扰）。
+// 两态删除的 armed 状态按目标会话 id 独立存储（不同目标互不干扰）。
 // 顶栏 🗑 已移除，入口统一走右键菜单（菜单项文本由 renderCtxMenuDel 同步）。
 const delArmed = new Map(); // 目标会话 id -> 3 秒复原定时器句柄
 
@@ -565,7 +565,7 @@ async function delSession(id) {
   closeSessionList();
 }
 
-// ---------- 会话重命名（ / ） ----------
+// ---------- 会话重命名 ----------
 // 编辑态：rename-bar 替换触发器（触发器隐藏即不可交互），列表收起，新建按钮禁用，
 // 防止切换会话导致保存到错误 id。Enter 保存 / Esc 取消 / 按钮双支持；
 // 失焦无改动退出不保存，有改动保留编辑态（防误触丢输入）。
@@ -582,7 +582,7 @@ function showRenameError(msg) {
   renameErrorTimer = setTimeout(() => err.classList.add('hidden'), 3000);
 }
 
-// ：操作目标泛化。无参 → 当前会话（触发器/菜单默认）；有参 → 目标会话（列表项右键）。
+// 操作目标泛化。无参 → 当前会话（触发器/菜单默认）；有参 → 目标会话（列表项右键）。
 // 编辑对象可以是「当前会话」或「右键目标会话」，编辑条预填目标标题，保存后目标条目 title 更新
 // （目标非当前会话时只更新其 title，不切换当前会话）。
 function startRename(id) {
@@ -724,7 +724,7 @@ function fillSettings() {
   $('set-context-mode').value = cfg.contextMode;
   $('set-window').value = cfg.windowSize;
   $('set-thinking').checked = !!cfg.includeThinking;
-  $('set-self-prompt').value = cfg.selfPrompt ?? ''; // ：回显自我意识提示词（后端可能缺省，?? '' 兜底）
+  $('set-self-prompt').value = cfg.selfPrompt ?? ''; // 回显自我意识提示词（后端可能缺省，?? '' 兜底）
   $('wrap-window').style.display = cfg.contextMode === 'windowed' ? 'block' : 'none';
 }
 
@@ -733,7 +733,7 @@ async function saveSettings() {
     contextMode: $('set-context-mode').value,
     windowSize: Number($('set-window').value) || 30,
     includeThinking: $('set-thinking').checked,
-    selfPrompt: $('set-self-prompt').value.trim(), // ：本地 trim 后提交，空串=恢复内置默认
+    selfPrompt: $('set-self-prompt').value.trim(), // 本地 trim 后提交，空串=恢复内置默认
   };
   const res = await api('/api/settings', { method: 'POST', body: JSON.stringify(body) });
   if (!res.ok) {
@@ -879,7 +879,7 @@ function showRoundList() {
 
 // ---------- 事件绑定 ----------
 
-// ---------- 会话右键菜单（ / ） ----------
+// ---------- 会话右键菜单 ----------
 // 右键触发器（目标=当前会话）或列表项（目标=该项会话 id，无需先选中）弹出「重命名/删除」两项。
 // 操作目标快照存 ctxMenuTargetId；菜单内两态删除：点「🗑 删除」菜单不关闭、原地变「确认删除？」，
 // 3 秒内再点真删，超时自动复原；菜单每次打开时重置删除项（不带历史 armed 显示残留）。

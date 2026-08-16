@@ -53,8 +53,8 @@ const PATCH_CHECKERS = [
 
 // 会话索引（与 debug/check-host-patch.js 的 DEFAULT_HOME 约定一致）。
 // 可用 SIDECHAT_HOME 环境变量覆盖：容器内把 .hanako 只读挂载后指定，如
-//   docker run -v "C:\Users\<USER>\.hanako:/hana:ro" -e SIDECHAT_HOME=/hana ...
-const DEFAULT_HOME = process.env.SIDECHAT_HOME || 'C:\\Users\\<USER>\\.hanako';
+//   docker run -v "${HOME}\.hanako:/hana:ro" -e SIDECHAT_HOME=/hana ...
+const DEFAULT_HOME = process.env.SIDECHAT_HOME || path.join(require('os').homedir(), '.hanako');
 const INDEX_PATH = path.join(DEFAULT_HOME, 'plugin-data', 'side-chat', 'sidechat-index.json');
 
 // Docker 联动常量

@@ -1,6 +1,6 @@
-#  issue 草稿 —— 上报 OpenHanako 仓库用
+# Host 补丁契约缺口 issue 草稿 —— 上报 OpenHanako 仓库用
 
-> 用途：提交到 https://github.com/liliMozi/openhanako 的 issue。提交前由 Khalil 审阅确认。
+> 用途：提交到 https://github.com/liliMozi/openhanako 的 issue。提交前由作者审阅确认。
 > 标题、正文、标签建议均已写好；正文为英文（开源仓库通用语言）。
 
 ---

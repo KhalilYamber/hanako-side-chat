@@ -1,7 +1,6 @@
 # Host-Adapter 降耦设计（草案 v0.1）
 
 > 状态：设计草案，未实现。目标版本：0.4.0（或随发布节奏）。
-> 维护：维护者 · 2026-08-16
 
 ## 1. 背景
 
@@ -24,7 +23,7 @@ side-chat 大量依赖 Hana host 的**未公开行为**：补丁后的 query 参
 | iframe URL query | `agentId`（官方白名单）、`sessionPath`（补丁注入）、`token`（补丁放行） | ✅ 仅补丁提供 |
 
 **结论**：
-1. surfaceSession 是纯认证机制，**不可能**从中拿到主会话 id，`pss_`/`pit_` 无 session 语义。之前「依赖 host 支持」的 session 级隔离只能等官方新机制（见  issue 建议：官方把主会话路径纳入 ticket payload 或透传参数）。
+1. surfaceSession 是纯认证机制，**不可能**从中拿到主会话 id，`pss_`/`pit_` 无 session 语义。之前「依赖 host 支持」的 session 级隔离只能等官方新机制（见 host 补丁 issue 建议：官方把主会话路径纳入 ticket payload 或透传参数）。
 2. `sessionPath` 补丁在官方支持前**无法退役**——它是当前唯一的主会话信息来源。
 3. 适配层的核心职责 = 把「主会话定位五级降级链」和「补丁状态/契约版本探测」封装成稳定接口。
 
@@ -83,7 +82,7 @@ lib/host-adapter.js（新）
 ## 4. 收益与风险
 
 **收益**：
-- host 行为变化只改一处； 官方支持后（假设官方透传主会话 id），只需改 `locateMainSession` 的优先级，加一个 `method: 'official'`。
+- host 行为变化只改一处；上游 issue 官方支持后（假设官方透传主会话 id），只需改 `locateMainSession` 的优先级，加一个 `method: 'official'`。
 - `lib/main-context.js` 可单测（注入 mock adapter），当前它直连 host 导致难以测试。
 - 发布到 GitHub 后，第三方用户升级 Hana 的故障面缩小到 adapter 一处。
 
@@ -91,6 +90,6 @@ lib/host-adapter.js（新）
 - 迁移过程可能引入行为差异（尤其降级链的顺序和边界条件）→ 靠 smoke-test + 真机复验兜底。
 - adapter 膨胀成「上帝模块」→ 控制粒度：只收 host 依赖，业务逻辑一律不进。
 
-## 5. 与  的关系
+## 5. 与上游修复的关系
 
-（官方 issue）落地前，适配层把补丁机制当「契约 v1」封装；落地后 adapter 升「契约 v2」，补丁代码路径可整体删除（`apply-*.cjs` 保留为历史工具）。这是降耦的长期价值点：**将来删补丁不需要碰业务代码**。
+上游 issue（host 补丁契约缺口）落地前，适配层把补丁机制当「契约 v1」封装；落地后 adapter 升「契约 v2」，补丁代码路径可整体删除（`apply-*.cjs` 保留为历史工具）。这是降耦的长期价值点：**将来删补丁不需要碰业务代码**。
