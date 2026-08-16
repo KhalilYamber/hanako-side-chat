@@ -1,5 +1,10 @@
 # SideChat 辅助对话
 
+![License](https://img.shields.io/badge/license-MIT-green)
+![Version](https://img.shields.io/badge/version-v0.3.0-blue)
+![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
+![Hana](https://img.shields.io/badge/HanaAgent-0.82%2B-orange)
+
 HanaAgent（OpenHanako）的侧边栏小对话插件：一个**纯 LLM 问答**面板，为主对话提供随时的旁路问答体验。
 
 它只会聊天，没有操作能力：不能调工具、不能改文件、不能跑命令。动手的事只归主对话。
@@ -20,9 +25,21 @@ HanaAgent（OpenHanako）的侧边栏小对话插件：一个**纯 LLM 问答**�
 
 ## 安装
 
-1. 把本目录（或 release 包）复制到 `<HANA_HOME>\plugins\side-chat`。`HANA_HOME` 默认是 `C:\Users\<你的用户名>\.hanako`。
-2. 打开 Hana 设置，确认「允许 full-access 插件」开关已开启（本插件需要 full-access 才能使用 session/agent API）。
-3. 重启 Hana，或等待插件目录扫描。侧边栏出现「辅助对话」入口即安装成功。
+前置条件：已安装 HanaAgent（OpenHanako）0.82 及以上版本。
+
+### 方式一：Release 安装（推荐）
+
+1. 到 [Releases](https://github.com/KhalilYamber/hanako-side-chat/releases) 下载最新版 `side-chat-<版本>.zip`。
+2. 解压到 `<HANA_HOME>\plugins\`（得到 `side-chat` 文件夹）。`HANA_HOME` 默认是 `C:\Users\<你的用户名>\.hanako`。
+3. 打开 Hana 设置，确认「允许 full-access 插件」开关已开启（本插件需要 full-access 才能使用 session/agent API）。
+4. 重启 Hana，或等待插件目录扫描。侧边栏出现「辅助对话」入口即安装成功。
+
+### 方式二：源码安装
+
+```powershell
+git clone https://github.com/KhalilYamber/hanako-side-chat.git
+# 把整个仓库目录复制到 <HANA_HOME>\plugins\side-chat，其余步骤同上
+```
 
 升级版本时直接覆盖插件目录即可，插件数据（会话索引/配置/缓存）存在 `plugin-data\side-chat\`，不受影响。
 
@@ -64,7 +81,7 @@ node debug\apply-sessionpath-patch.cjs
 node debug\smoke-test.cjs
 ```
 
-补丁状态也可在面板「设置 → 运行诊断」里查看。这两处契约缺口值得向 OpenHanako 仓库（liliMozi/openhanako）上报，官方支持后会移除补丁依赖。
+补丁状态也可在面板「设置 → 运行诊断」里查看。这两处契约缺口已上报 OpenHanako 仓库（[issue](https://github.com/liliMozi/openhanako/issues)），官方支持后会移除补丁依赖。
 
 ## 工作原理（简述）
 
@@ -84,11 +101,13 @@ node debug\smoke-test.cjs
 ## 开发与回归
 
 ```powershell
-# 语法/补丁/索引/Docker 联动全量冒烟（可在 Docker 容器内跑：docker run -v "<HANA_HOME>:/hana:ro" -e SIDECHAT_HOME=/hana node:24-alpine node debug/smoke-test.cjs）
+# 语法/补丁/索引/Docker 联动全量冒烟
 node debug\smoke-test.cjs
+# 容器内运行（源码只读挂载 + .hanako 只读挂载）：
+# docker run --rm -v "${HOME}\.hanako:/hana:ro" -e SIDECHAT_HOME=/hana -v "${PWD}:/app:ro" -w /app node:24-alpine node debug/smoke-test.cjs
 ```
 
-开发容器：`Dockerfile`（node:24-alpine）。内部交接文档见 `DEVELOPMENT_HANDOFF.md` 与各 `FIX_*.md`（含完整决策史与 API 契约实测记录）。
+开发容器：`Dockerfile`（node:24-alpine）。架构演进设计见 `docs/HOST_ADAPTER.md`。
 
 ## License
 
