@@ -445,6 +445,10 @@ async function openSession(id) {
   state.currentId = id;
   state.currentHasMessages = false;
   $('messages').innerHTML = '';
+  // 立即刷新触发器/列表标题：currentId 已变更，视图应立即反映「已进入该会话」，
+  // 不依赖下方历史读取的网络往返。若 GET 慢或失败（session:history 对刚创建的会话
+  // 可能未就绪），触发器也不会停在「（暂无会话，点 ＋ 新建）」/旧标题。
+  renderSessionList();
   if (!id) {
     updateNewBtn();
     renderBindHint();
