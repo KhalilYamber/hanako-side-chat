@@ -1,0 +1,90 @@
+# .github/workflows/release.yml —— 发布自动化流水线（CI 打包 + 校验 + 回归 + Release）
+# 模式：本地只推 tag，其余交给云端——打包、校验、回归、发布全部在 Actions 完成，
+#       产物带 .sha256 校验文件，Release author 显示 github-actions[bot] 属正常。
+# 触发：推 v* tag（正式发布）；workflow_dispatch 手动备用（干跑：只打包/校验/回归，跳过发布步，
+#       版本门禁不做 tag 比对——用于改完流水线后的无副作用验证）。
+# 零依赖说明：本插件无 package.json、无 npm install；Node 直装 24（仓库无 .nvmrc，
+#       与 Dockerfile 基础镜像 node:24-alpine、本地开发环境保持一致）。
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write # gh release create 创建 Release 与上传附件所需
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      # fetch-depth: 0：拿全量历史与 tag。默认 depth 1 不带 tag，
+      # gh release create 会因找不到 tag 而失败；CHANGELOG 提取也依赖完整工作树。
+      - name: checkout（fetch-depth 0，取 tag 与完整历史）
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 安装 Node 24（零依赖项目，无需 npm install）
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      # 版本一致性门禁：tag（去 v 前缀）必须等于 manifest.json 的 version。
+      # manifest 是本项目版本的唯一事实源（无 package.json）；不一致说明忘了 bump 就打 tag，直接拦下。
+      # 版本号写入 GITHUB_ENV，后续步骤统一取用，避免各处重复解析。
+      - name: 版本一致性门禁（tag ↔ manifest.json version）
+        run: |
+          VERSION=$(node -p "require('./manifest.json').version")
+          echo "APP_VERSION=$VERSION" >> "$GITHUB_ENV"
+          if [ "$GITHUB_EVENT_NAME" = "push" ]; then
+            TAG_VERSION="${GITHUB_REF_NAME#v}"
+            if [ "$TAG_VERSION" != "$VERSION" ]; then
+              echo "::error::tag($GITHUB_REF_NAME → $TAG_VERSION) 与 manifest.json version($VERSION) 不一致；请先同步版本号再重新打 tag"
+              exit 1
+            fi
+            echo "版本一致：tag $GITHUB_REF_NAME ↔ manifest $VERSION"
+          else
+            echo "手动触发（干跑）：无 tag 可比对，使用 manifest 版本 $VERSION"
+          fi
+
+      - name: 打包（dist/side-chat-<version>.zip + .sha256）
+        run: node scripts/pack-zip.mjs
+
+      - name: 校验（魔数/EOCD/条目数/CRC 逐条/sha256 一致性）
+        run: node scripts/verify-zip.mjs
+
+      # --json：结果走 stdout 供日志消费。索引项与 Docker 项在 CI 环境自动跳过（属正常降级），
+      # 语法校验与补丁检测自测为必过项，红了即阻断发布。
+      - name: 回归（语法 + 补丁自测必过；索引/Docker 项 CI 上自动跳过）
+        run: node debug/smoke-test.cjs --json
+
+      # 发布三要素：附件 zip + sha256、notes 取 CHANGELOG 当前版本段落。
+      # notes 提取规则：从 "## [<version>]" 行起，到下一个 "## [" 段落或任何一级标题("# ")为止
+      # ——本仓库 CHANGELOG 最新段落置于文件顶部、# Changelog 总标题之前，遇一级标题必须停，
+      # 否则会把总标题与导语混进 notes。段落缺失（忘写 CHANGELOG）则拒绝发布。
+      - name: 发布（gh release + CHANGELOG 当前版本段落为 notes）
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ZIP="dist/side-chat-${APP_VERSION}.zip"
+          node -e '
+            const fs = require("fs");
+            const version = process.argv[1];
+            const lines = fs.readFileSync("CHANGELOG.md", "utf8").split("\n");
+            const start = lines.findIndex((l) => l.startsWith("## [" + version + "]"));
+            if (start < 0) {
+              console.error("CHANGELOG.md 缺少 [" + version + "] 段落，拒绝发布");
+              process.exit(1);
+            }
+            const end = lines.findIndex((l, i) => i > start && /^(## \[|# )/.test(l));
+            const body = lines.slice(start, end < 0 ? lines.length : end).join("\n").trimEnd();
+            fs.writeFileSync(".release-notes.md", body + "\n");
+            console.log("已提取 [" + version + "] notes，共 " + body.split("\n").length + " 行");
+          ' "$APP_VERSION"
+          gh release create "$GITHUB_REF_NAME" "$ZIP" "$ZIP.sha256" \
+            --title "Side Chat v${APP_VERSION}" \
+            --notes-file .release-notes.md
+          echo "发布完成：$GITHUB_REF_NAME（附件 ${ZIP} 与 ${ZIP}.sha256）"
