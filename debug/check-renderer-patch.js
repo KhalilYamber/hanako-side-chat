@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // debug/check-renderer-patch.js —— 「sessionPath 注入」补丁检测脚本（纯 Node.js CJS，无第三方依赖）
-// 背景：给 Hana 打的根治补丁，让 host 的 widget iframe URL 带上当前主会话路径
+// 背景：给 Hana 打的根治补丁，让 host 的 widget/页面 iframe URL 带上当前主会话路径
 // （sessionPath 参数），修复 side-chat 插件拿不到「当前打开的主对话」的问题。Hana 升级会整体
 // 覆盖 artifacts 目录（renderer/server 全部文件被替换），补丁随之丢失，需要本脚本定期复检。
 //
@@ -86,6 +86,7 @@ function resolveFiles(home) {
   const assets = path.join(home, 'artifacts', 'renderer', rendererVer, 'assets');
   const sbName = findAssetFile(assets, 'SendButton-');
   const railName = findAssetFile(assets, 'WorkspaceCompanionRail-');
+  const mainName = findAssetFile(assets, 'main-');
   return {
     rendererVer,
     serverVer,
@@ -97,6 +98,10 @@ function resolveFiles(home) {
       rail: {
         label: railName,
         rel: path.join('renderer', rendererVer, 'assets', railName),
+      },
+      main: {
+        label: mainName,
+        rel: path.join('renderer', rendererVer, 'assets', mainName),
       },
       server: {
         label: 'index.js（server bundle）',
@@ -110,11 +115,14 @@ function resolveFiles(home) {
 const SELFTEST_FILES = {
   sb: { label: 'SendButton-*.js（内存样本）' },
   rail: { label: 'WorkspaceCompanionRail-*.js（内存样本）' },
+  main: { label: 'main-*.js（内存样本）' },
   server: { label: 'index.js（server bundle 内存样本）' },
 };
 
-// ---------- 检查项定义（7 项，与 apply-sessionpath-patch.cjs 的替换目标一一对应） ----------
+// ---------- 检查项定义（10 项，与 apply-sessionpath-patch.cjs 的替换目标一一对应） ----------
 // needle: 命中特征字符串；kind: 'jot' 走 jot 集合专用检测（见 jotHasSessionPath）
+// 说明：main 的 os 即 SendButton 的 xl（u as os），其「os 定义注入 sessionPath」链路
+// （xl 内 sessionPath:g 传递 + vl 内 q&&set）由第 b/d 项覆盖；h/i/j 三项锚定页面组件 go。
 const CHECKS = [
   { id: 'a', key: 'sb', desc: '含 function xl(t,e,g){', needle: 'function xl(t,e,g){' },
   { id: 'b', key: 'sb', desc: '含 sessionPath:g（xl 调用注入）', needle: 'sessionPath:g' },
@@ -122,6 +130,9 @@ const CHECKS = [
   { id: 'd', key: 'sb', desc: '含 q&&m.searchParams.set("sessionPath",q)', needle: 'q&&m.searchParams.set("sessionPath",q)' },
   { id: 'e', key: 'rail', desc: '含 b=m(u=>u.currentSessionPath??null)', needle: 'b=m(u=>u.currentSessionPath??null)' },
   { id: 'f', key: 'rail', desc: '含 r=ms(o?.routeUrl??null,a,b)', needle: 'r=ms(o?.routeUrl??null,a,b)' },
+  { id: 'h', key: 'main', desc: '页面组件 go 含 currentSessionPath 取值', needle: 'b=d(h=>h.currentSessionPath??null)' },
+  { id: 'i', key: 'main', desc: 'go 调用 os 传入 sessionPath（os 即 xl）', needle: 'c=os(a?.routeUrl??null,i,b)' },
+  { id: 'j', key: 'main', desc: 'go 补丁段完整（slot:"page" 组件锚点+取值+传参一体）', needle: 'function go({pluginId:e}){const s=d(h=>h.pluginPages),i=d(h=>h.currentAgentId),b=d(h=>h.currentSessionPath??null)' },
   {
     id: 'g',
     key: 'server',
@@ -292,6 +303,14 @@ const RAIL_ORIG = `
   const n=m(u=>u.pluginWidgets),a=m(u=>u.currentAgentId),o=i.useMemo(()=>n.find(u=>u.pluginId===e),[n,e]),r=ms(o?.routeUrl??null,a)
 `;
 
+const MAIN_PATCHED = `
+  function go({pluginId:e}){const s=d(h=>h.pluginPages),i=d(h=>h.currentAgentId),b=d(h=>h.currentSessionPath??null),a=r.useMemo(()=>s.find(h=>h.pluginId===e),[s,e]),c=os(a?.routeUrl??null,i,b),{iframeRef:o,status:l}=ls(c.iframeSrc,{pluginId:e,agentId:i,slot:"page",readyOnTimeout:!0})
+`;
+
+const MAIN_ORIG = `
+  function go({pluginId:e}){const s=d(h=>h.pluginPages),i=d(h=>h.currentAgentId),a=r.useMemo(()=>s.find(h=>h.pluginId===e),[s,e]),c=os(a?.routeUrl??null,i),{iframeRef:o,status:l}=ls(c.iframeSrc,{pluginId:e,agentId:i,slot:"page",readyOnTimeout:!0})
+`;
+
 const SERVER_PATCHED = `
   const jot = new Set([Hk, nN, "agentId", "hana-theme", "hana-css", "token", "sessionPath"]);
   const creds = new Set(["api_key", "token", "authorization"]);  // 天然含 token 的其它集合，不应干扰
@@ -305,24 +324,24 @@ const SERVER_ORIG = `
 `;
 
 function runSelfTest() {
-  // 场景1：补丁齐全 → 期望 PASS（7/7 命中）
-  const s1 = runChecks({ sb: SB_PATCHED, rail: RAIL_PATCHED, server: SERVER_PATCHED }, SELFTEST_FILES);
-  // 场景2：补丁全部丢失 → 期望 FAIL（7/7 未命中，无误报）
-  const s2 = runChecks({ sb: SB_ORIG, rail: RAIL_ORIG, server: SERVER_ORIG }, SELFTEST_FILES);
-  // 场景3：部分丢失（SendButton 在、其余丢失）→ 期望 FAIL（4 命中 + 3 未命中）
-  const s3 = runChecks({ sb: SB_PATCHED, rail: RAIL_ORIG, server: SERVER_ORIG }, SELFTEST_FILES);
+  // 场景1：补丁齐全 → 期望 PASS（10/10 命中）
+  const s1 = runChecks({ sb: SB_PATCHED, rail: RAIL_PATCHED, server: SERVER_PATCHED, main: MAIN_PATCHED }, SELFTEST_FILES);
+  // 场景2：补丁全部丢失 → 期望 FAIL（10/10 未命中，无误报）
+  const s2 = runChecks({ sb: SB_ORIG, rail: RAIL_ORIG, server: SERVER_ORIG, main: MAIN_ORIG }, SELFTEST_FILES);
+  // 场景3：部分丢失（SendButton 在、其余丢失）→ 期望 FAIL（4 命中 + 6 未命中）
+  const s3 = runChecks({ sb: SB_PATCHED, rail: RAIL_ORIG, server: SERVER_ORIG, main: MAIN_ORIG }, SELFTEST_FILES);
   // 场景4：文件缺失 → 期望 FAIL（缺失文件归为未命中）
-  const s4 = runChecks({ sb: null, rail: RAIL_PATCHED, server: SERVER_PATCHED }, SELFTEST_FILES);
+  const s4 = runChecks({ sb: null, rail: RAIL_PATCHED, server: SERVER_PATCHED, main: MAIN_PATCHED }, SELFTEST_FILES);
 
   const t1 = s1.allOk === true;
   const t2 = !s2.allOk && s2.results.every((r) => !r.ok);
-  const t3 = !s3.allOk && s3.results.filter((r) => r.ok).length === 4 && s3.results.filter((r) => !r.ok).length === 3;
+  const t3 = !s3.allOk && s3.results.filter((r) => r.ok).length === 4 && s3.results.filter((r) => !r.ok).length === 6;
   const t4 = !s4.allOk && s4.results.slice(0, 4).every((r) => !r.ok) && s4.results.slice(4).every((r) => r.ok);
 
   const line = (name, pass, detail) => console.log(`${name}: ${pass ? 'PASS ✓' : 'FAIL ✗'}（${detail}）`);
-  line('样本1（补丁齐全）', t1, '期望 PASS，7/7 命中');
-  line('样本2（补丁丢失）', t2, '期望 FAIL，7/7 未命中、无误报');
-  line('样本3（部分丢失）', t3, '期望 FAIL，4 命中 + 3 未命中');
+  line('样本1（补丁齐全）', t1, '期望 PASS，10/10 命中');
+  line('样本2（补丁丢失）', t2, '期望 FAIL，10/10 未命中、无误报');
+  line('样本3（部分丢失）', t3, '期望 FAIL，4 命中 + 6 未命中');
   line('样本4（文件缺失）', t4, '期望 FAIL，缺失文件归为未命中');
   return t1 && t2 && t3 && t4;
 }
@@ -380,7 +399,7 @@ function main() {
   for (const res of r.results) printResult(res);
 
   if (r.allOk) {
-    console.log('\n结果: PASS（补丁在 —— renderer/server 三文件共 7 项特征全部命中）');
+    console.log('\n结果: PASS（补丁在 —— renderer/server 四文件共 10 项特征全部命中）');
     process.exit(0);
   }
   console.log('\n结果: FAIL（存在未命中项 —— 补丁丢失或从未打过）');

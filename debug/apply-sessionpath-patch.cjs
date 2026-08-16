@@ -1,5 +1,5 @@
 // apply-sessionpath-patch.cjs —— 打「sessionPath 注入」补丁（renderer + server bundle）
-// 原理：host 前端 widget 挂载组件从 store 取 currentAgentId 但没传主会话 id；
+// 原理：host 前端 widget/页面挂载组件从 store 取 currentAgentId 但没传主会话 id；
 // 补丁把 currentSessionPath 注入 iframe URL，server 的 jot 集合放行该参数，
 // 插件即可拿到「当前打开的主对话」真实路径（根治辅助会话串主对话）。
 // 用法：node debug/apply-sessionpath-patch.cjs [--home <path>]
@@ -78,6 +78,7 @@ function discoverTargets(home) {
   const assets = path.join(home, 'artifacts', 'renderer', rendererVer, 'assets');
   const sbFile = findAssetFile(assets, 'SendButton-');
   const railFile = findAssetFile(assets, 'WorkspaceCompanionRail-');
+  const mainFile = findAssetFile(assets, 'main-');
   return {
     rendererVer,
     serverVer,
@@ -99,6 +100,16 @@ function discoverTargets(home) {
         pairs: [
           ['const n=m(u=>u.pluginWidgets),a=m(u=>u.currentAgentId),o=i.useMemo(()=>n.find(u=>u.pluginId===e),[n,e]),r=ms(o?.routeUrl??null,a)',
            'const n=m(u=>u.pluginWidgets),a=m(u=>u.currentAgentId),b=m(u=>u.currentSessionPath??null),o=i.useMemo(()=>n.find(u=>u.pluginId===e),[n,e]),r=ms(o?.routeUrl??null,a,b)'],
+        ],
+      },
+      {
+        // 页面 tab 组件（main-*.js）：go 与 widget 侧 ha 同构，os 即 SendButton 的 xl（u as os，
+        // 已支持 sessionPath 第三参数）。补丁 = go 内取 currentSessionPath 并传给 os，页面 iframe
+        // URL 即带 sessionPath，与侧栏一样严格归属主对话。锚点 slot:"page" 组件的唯一性已验证。
+        file: path.join(assets, mainFile),
+        pairs: [
+          ['function go({pluginId:e}){const s=d(h=>h.pluginPages),i=d(h=>h.currentAgentId),a=r.useMemo(()=>s.find(h=>h.pluginId===e),[s,e]),c=os(a?.routeUrl??null,i)',
+           'function go({pluginId:e}){const s=d(h=>h.pluginPages),i=d(h=>h.currentAgentId),b=d(h=>h.currentSessionPath??null),a=r.useMemo(()=>s.find(h=>h.pluginId===e),[s,e]),c=os(a?.routeUrl??null,i,b)'],
         ],
       },
       {
