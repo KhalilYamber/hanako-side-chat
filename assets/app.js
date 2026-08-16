@@ -265,7 +265,13 @@ function renderMainBar(main) {
   const mode = main.mode ?? (state.config?.contextMode ?? 'windowed');
   const pending = main.pending;
   dot.className = pending ? 'warn' : 'ok';
-  const base = `主对话：${rounds} 轮 · ${mode === 'full' ? '全量' : `最近 ${state.config?.windowSize ?? 30} 轮+摘要`}`;
+  let base = `主对话：${rounds} 轮 · ${mode === 'full' ? '全量' : `最近 ${state.config?.windowSize ?? 30} 轮+摘要`}`;
+  // 快照同步状态：mainStats.snapshot=true 时展示已同步进度（M=main.lastSynced）；
+  // M 与总轮数相等简化为「已同步」，M 缺失/为 0 时不追加（保持原文案）
+  if (main.snapshot === true) {
+    const synced = Number(main.lastSynced) || 0;
+    if (synced > 0) base += synced >= rounds ? ' · 已同步' : ` · 已同步至 ${synced} 轮`;
+  }
   label.textContent = pending ? `${base}（正在回复中…）` : base;
 }
 

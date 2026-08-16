@@ -1,14 +1,21 @@
-// verify.js —— SideChat 全链路验收工具（Q1/Q2/Q6 进程内验证）
-// 在插件进程内模拟 widget 的核心链路：
-//   1. 读主会话轮数（session:history）
-//   2. 新建 plugin_private 会话（绑定当前主对话 agent）
-//   3. 发消息并注入 context（system + beforeUser 两套上下文）
-//   4. 轮询等待回复
-//   5. 从会话 jsonl 确认实际绑定模型（model_change）
-//   6. 从 usage-ledger.json 确认用量归因
+// verify.js —— SideChat 全链路验收工具（Q1/Q2/Q6 进程内验证）+ 静态回归联动
+// 分工说明（与 debug/smoke-test.cjs 的关系）：
+//   verify.js（本文件）：运行时全链路验证，必须依赖插件进程环境（ctx.bus）：
+//     1. 读主会话轮数（session:history）
+//     2. 新建 plugin_private 会话（绑定当前主对话 agent）
+//     3. 发消息并注入 context（system + beforeUser 两套上下文）
+//     4. 轮询等待回复
+//     5. 从会话 jsonl 确认实际绑定模型（model_change）
+//     6. 从 usage-ledger.json 确认用量归因
+//   debug/smoke-test.cjs：静态回归（CLI 独立运行，node debug/smoke-test.cjs [--json]）：
+//     ① 语法校验（8 文件）② 补丁检测自测 ③ 索引完整性 ④ Docker 联动（可选）
+//   两者互补无重叠：本工具执行时顺带以子进程调 smoke-test（--json 输出并入结果），
+//   smoke-test 失败仅记入步骤，不阻断真实链路验证。
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 
 export const name = 'verify';
 export const description = 'SideChat 验收：全链路测试（新建会话、发消息注入、等回复、模型与用量确认）';
@@ -33,6 +40,28 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 export async function execute(input, ctx) {
   const out = { steps: {} };
+
+  // 0. 静态回归联动：子进程调 debug/smoke-test.cjs（--json 输出并入结果），失败不阻断链路验证
+  try {
+    const smokePath = path.join(path.dirname(fileURLToPath(import.meta.url)), 'smoke-test.cjs');
+    const r = spawnSync(process.execPath, [smokePath, '--json'], {
+      encoding: 'utf8',
+      timeout: 120000,
+      windowsHide: true,
+    });
+    if (r.error) {
+      out.steps.smokeTest = { ok: false, error: String(r.error.message ?? r.error) };
+    } else {
+      try {
+        const parsed = JSON.parse(r.stdout);
+        out.steps.smokeTest = { ok: parsed.ok, summary: parsed.summary };
+      } catch {
+        out.steps.smokeTest = { ok: false, exitCode: r.status, raw: (r.stdout || r.stderr || '').slice(0, 500) };
+      }
+    }
+  } catch (e) {
+    out.steps.smokeTest = { ok: false, error: String(e?.message ?? e) };
+  }
 
   // 1. 主会话轮数
   try {
