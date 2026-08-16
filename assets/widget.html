@@ -1,4 +1,4 @@
-﻿<!doctype html>
+<!doctype html>
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
@@ -10,7 +10,7 @@
     // 且 host 有 5 秒超时，所以这里用 inline 脚本在 HTML 解析时立即发送，不依赖 app.js 的加载。
     try { window.parent.postMessage({ type: "ready" }, "*"); } catch (e) {}
   </script>
-  <link rel="stylesheet" href="/api/plugins/side-chat/assets/widget.css?v=16">
+  <link rel="stylesheet" href="/api/plugins/side-chat/assets/widget.css?v=17">
 </head>
 <body data-surface="widget">
   <div id="app">
@@ -65,7 +65,10 @@
 
   <!-- 设置面板 -->
   <div id="settings-panel" class="hidden">
-    <h3>辅助对话设置</h3>
+    <div class="settings-header">
+      <h3>辅助对话设置</h3>
+      <button id="btn-close-settings">保存并关闭</button>
+    </div>
     <label>参考上下文策略
       <select id="set-context-mode">
         <option value="windowed">最近 N 轮 + 摘要（省 token）</option>
@@ -88,7 +91,6 @@
     <h4>运行诊断</h4>
     <button id="btn-diag">运行诊断</button>
     <pre id="diag-output" class="hidden"></pre>
-    <button id="btn-close-settings">关闭</button>
   </div>
 
   <!-- 预览浮层：主对话内容选择器（T6） -->
