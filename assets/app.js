@@ -20,6 +20,13 @@ const AGENT_ID = URL_PARAMS.get('agentId') || '';
 // sessionPath 来自 host 补丁注入的 iframe URL，是「当前打开主对话」的真实路径，
 // 优先级高于任何猜测值（后端 resolveMainSessionPath 第一个校验它）
 const SESSION_PATH = URL_PARAMS.get('sessionPath') || '';
+// [page-ext] 页面模式主会话接口位：/page 未来承载大界面功能时需获取「当前主会话」，
+// 经 sessionPath 注入或等价机制传递（当前 /page 与 /widget 共用下方定位逻辑，行为不变）
+
+// 运行表面分层：/widget（侧栏面板）与 /page（页面入口）共用同一前端，
+// 靠 <html data-surface> 区分（模板默认 widget，后端 /page 渲染时替换为 page）。
+// 当前两侧逻辑与外观一致，仅预留扩展位。
+const SURFACE = document.documentElement.dataset.surface || 'widget';
 
 let state = { sessions: [], config: null, currentId: null, busy: false, creating: false, deleting: false, currentHasMessages: false, lastMainPath: null, mainPath: null };
 let timer = null;
@@ -1024,6 +1031,8 @@ document.addEventListener('visibilitychange', () => {
 // ---------- 启动 ----------
 
 (async function init() {
+  // [page-ext] 页面模式扩展入口：SURFACE==='page' 时未来在此挂载大界面功能（信息整理/写作分析）
+  // 当前页面与侧栏共用同一逻辑，外观与行为不变
   await loadState();
   if (state.sessions.length) await openSession(state.sessions[0].id);
   // 主对话实时同步：SSE 长连接（主对话有新消息/回复完成即刷新）

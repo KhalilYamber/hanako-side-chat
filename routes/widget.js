@@ -22,7 +22,10 @@ function isSafeThemeCss(css, baseUrl) {
 }
 
 export default function registerWidgetRoutes(app, ctx) {
-  const render = (c) => {
+  // mode：'widget'（侧栏面板）| 'page'（页面入口）。两者共用同一模板渲染，
+  // 通过 <html data-surface> 区分运行表面：模板默认 data-surface="widget"（assets/widget.html），
+  // page 模式在此替换为 page。前端 app.js 启动时读取它得到 SURFACE。
+  const render = (c, mode) => {
     const css = c.req.query('hana-css') || '';
     const theme = c.req.query('hana-theme') || '';
     const token = c.req.query('token') || '';
@@ -39,9 +42,16 @@ export default function registerWidgetRoutes(app, ctx) {
       const safeHref = new URL(css, c.req.url).href;
       html = html.replace('</head>', `  <link rel="stylesheet" href="${safeHref}">\n</head>`);
     }
+    // data-surface 分层 + theme 注入合并为一次替换：
+    // 替换目标串须与 assets/widget.html 的 <html lang="zh-CN" data-surface="widget"> 保持同步。
+    // theme 缺失时也要处理（page 模式），保证 /page 响应始终带 data-surface="page"。
+    const HTML_TAG = '<html lang="zh-CN" data-surface="widget">';
     if (theme && /^[a-zA-Z0-9_-]{1,64}$/.test(theme)) {
-      html = html.replace('<html lang="zh-CN">', `<html lang="zh-CN" data-theme="${theme}">`);
+      html = html.replace(HTML_TAG, `<html lang="zh-CN" data-theme="${theme}" data-surface="${mode}">`);
+    } else if (mode === 'page') {
+      html = html.replace(HTML_TAG, '<html lang="zh-CN" data-surface="page">');
     }
+    // [page-ext] 页面模式未来可在此注入专属数据/布局（当前 /page 与 /widget 共用同一渲染）
     // 无 ticket 的请求（host 走 cookie 会话时会省略 ticket）不会触发 server 下发 asset cookie，
     // 导致 iframe 内引用 assets 时 403。这里把 token 注入 assets 引用 URL 以通过认证。
     if (token) {
@@ -57,7 +67,8 @@ export default function registerWidgetRoutes(app, ctx) {
   };
 
   // 侧边栏 widget 面板
-  app.get('/widget', (c) => render(c));
-  // page 逃生入口：widget 面板若被 host 状态机误判，可用 page 方式打开同一界面
-  app.get('/page', (c) => render(c));
+  app.get('/widget', (c) => render(c, 'widget'));
+  // page 逃生入口：widget 面板若被 host 状态机误判，可用 page 方式打开同一界面。
+  // 未来页面承载大界面功能（信息整理/写作分析）时，本路由是页面模式的渲染入口
+  app.get('/page', (c) => render(c, 'page'));
 }
