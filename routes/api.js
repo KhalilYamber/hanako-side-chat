@@ -769,7 +769,8 @@ async function resolveContextSessionPath(pctx, c, entry) {
   return resolveMainSessionPath(pctx, c);
 }
 
-// 主会话信息：优先官方 history API，兜底 JSONL
+// 主会话信息：优先本地文件直读（parseSessionJsonl，无 200 条上限与过滤），
+// 文件无结果时兜底官方 history API（2026-08-16 主源切换）。
 // opts.skipSummary=true 时跳过旧轮摘要（状态接口用，零 LLM 调用）
 async function collectMainContext(pctx, c, cfg, opts = {}) {
   // 归属优先：调用方显式给出会话路径（辅助会话 boundMain）且通过白名单时直接用，
@@ -783,17 +784,7 @@ async function collectMainContext(pctx, c, cfg, opts = {}) {
   if (!sessionPath) {
     return { ok: false, error: '未找到主会话', stats: { rounds: 0, mode: cfg.contextMode }, rounds: [], reference: '' };
   }
-  let rounds = [];
-  let viaApi = true;
-  let apiError = null;
-  try {
-    const res = await pctx.bus.request('session:history', { sessionPath, limit: 500 });
-    rounds = (await loadLib()).roundsFromHistory(res?.messages);
-  } catch (e) {
-    viaApi = false;
-    apiError = String(e?.message ?? e);
-    rounds = (await loadLib()).parseSessionJsonl(sessionPath);
-  }
+  const { rounds, viaApi, apiError } = await readMainRounds(pctx, sessionPath);
   const roundCount = rounds.length;
   // 半截快照检测：主对话最后一条是用户消息、助手尚未回复（助手还在生成中）
   const lastRound = rounds[roundCount - 1];
@@ -849,24 +840,36 @@ async function collectMainContext(pctx, c, cfg, opts = {}) {
 
 // ---------- 快照 + 增量机制（2026-08-16 用户设计） ----------
 
-// 读主会话轮次：官方通道优先，失败兜底直接解析 JSONL。
-// 返回 { rounds, viaApi, apiError }。
+// 读主会话轮次：主源文件直读（parseSessionJsonl，与 host 的 Gv 读同一文件、同一套字段），
+// 绕开 host session:history 200 条上限与过滤（host 源码实锤，2026-08-16）。
+// 文件读取异常或解析结果为空时，fallback 官方 session:history（至少能拿到最近可用数据）。
+// 返回 { rounds, viaApi, apiError }：viaApi=true 表示本次实际来源为官方通道（history fallback），
+// false=文件直读；apiError 仅 history 路径失败时记录。
 async function readMainRounds(pctx, sessionPath) {
-  let viaApi = true;
-  let apiError = null;
+  const lib = await loadLib();
+  let rounds = [];
   try {
-    const res = await pctx.bus.request('session:history', { sessionPath, limit: 500 });
-    return { rounds: (await loadLib()).roundsFromHistory(res?.messages), viaApi, apiError };
+    rounds = lib.parseSessionJsonl(sessionPath);
   } catch (e) {
-    viaApi = false;
-    apiError = String(e?.message ?? e);
-    return { rounds: (await loadLib()).parseSessionJsonl(sessionPath), viaApi, apiError };
+    // parseSessionJsonl 内部已容错返回 []，此处防御未来改动
+    rounds = [];
   }
+  if (!rounds.length) {
+    // 文件直读无结果：兜底官方通道（limit 500 会被 host 截到 200，仅作保底）
+    try {
+      const res = await pctx.bus.request('session:history', { sessionPath, limit: 500 });
+      return { rounds: lib.roundsFromHistory(res?.messages), viaApi: true, apiError: null };
+    } catch (e) {
+      return { rounds: [], viaApi: true, apiError: String(e?.message ?? e) };
+    }
+  }
+  return { rounds, viaApi: false, apiError: null };
 }
 
 // 创建会话时的初始快照：full = 全部轮原文；windowed = 最近 N 轮原文 + 更早轮摘要（此刻调一次模型）。
 // 返回 { text, lastRoundCount, mainSessionPath, mode }；无轮次返回 null。
 // lastRoundCount 只计「配对完整的轮数」（pending 轮等配对完成后再进增量）。
+// 2026-08-16：主源文件直读，绕开 host session:history 200 条上限与过滤（host 源码实锤）。
 async function buildMainSnapshot(pctx, c, cfg, sessionPath) {
   const lib = await loadLib();
   const { rounds } = await readMainRounds(pctx, sessionPath);
@@ -937,7 +940,7 @@ async function syncMainContext(pctx, c, entry, cfg) {
 // ---------- 主会话统计短 TTL 缓存（REVIEW2） ----------
 
 // /api/state 每 5 秒轮询 + SSE 事件刷新都会调 mainSessionInfo → collectMainContext(skipSummary)，
-// 每次都 session:history 读主对话 500 条，高频重复读浪费，这里加 10 秒短 TTL。
+// 每次都直读主对话 JSONL 文件（无结果时兜底 history API），高频重复读浪费，这里加 10 秒短 TTL。
 // 缓存键 = agentId + mainPath query + contextMode（mode 变才失效；mainPath 变说明主对话切换）。
 // pending/轮数最多滞后 10 秒，可接受：SSE 事件也会触发前端刷新，但后端缓存 10 秒内仍复用，
 // 这是有意的节流。collectMainContext 本身（发消息路径）不走此缓存。
