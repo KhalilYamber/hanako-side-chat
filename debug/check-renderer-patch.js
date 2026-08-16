@@ -5,7 +5,10 @@
 // 覆盖 artifacts 目录（renderer/server 全部文件被替换），补丁随之丢失，需要本脚本定期复检。
 //
 // 用法：node debug/check-renderer-patch.js [homeDir]
-//   缺省 homeDir = C:\Users\<USER>\.hanako（与 apply-sessionpath-patch.cjs 保持一致）
+//   homeDir 解析：位置参数 > 环境变量（HANA_HOME → SIDECHAT_HOME）> 本机默认
+//   （缺省 homeDir = C:\Users\<USER>\.hanako，与 apply-sessionpath-patch.cjs 保持一致）
+//   renderer/server 版本目录与 renderer 产物文件名自动发现（取版本号/字典序最大者），
+//   发现失败时报错退出（退出码 1），不静默降级。
 // 附带自测：node debug/check-renderer-patch.js --selftest（内存样本，不落盘）
 //   覆盖场景：补丁在 / 补丁丢失 / 部分丢失 / 文件缺失
 //
@@ -18,25 +21,96 @@
 const fs = require('fs');
 const path = require('path');
 
+// 本机默认，发布场景用 env/参数覆盖
 const DEFAULT_HOME = 'C:\\Users\\<USER>\\.hanako';
-const R_VERSION = '0.446.6';           // renderer 版本目录
-const S_VERSION = '0.446.6-win32-x64'; // server 版本目录
 
-// ---------- 受检文件 ----------
+// ---------- home 解析：CLI 参数 > 环境变量（HANA_HOME → SIDECHAT_HOME）> 本机默认 ----------
+
+function resolveHome(cliHome) {
+  if (cliHome) return cliHome;
+  if (process.env.HANA_HOME) return process.env.HANA_HOME;
+  if (process.env.SIDECHAT_HOME) return process.env.SIDECHAT_HOME;
+  return DEFAULT_HOME;
+}
+
+// ---------- 版本目录 / 产物文件自动发现（失败抛错，调用方报错退出，不静默降级） ----------
+
+// 列出目录条目；目录不存在或不可读时抛错
+function listDirEntries(dir) {
+  if (!fs.existsSync(dir)) {
+    throw new Error(`目录不存在: ${dir}`);
+  }
+  try {
+    return fs.readdirSync(dir, { withFileTypes: true });
+  } catch (e) {
+    throw new Error(`无法读取 ${dir}（${e.message}）`);
+  }
+}
+
+// 取 <home>/artifacts/<kind>/ 下字典序最大的子目录名（Hana 版本号递增，字典序语义够用）
+// requireBundle 为 true 时（server）要求其下有 bundle/index.js
+function latestVersionDir(home, kind, requireBundle) {
+  const root = path.join(home, 'artifacts', kind);
+  const names = listDirEntries(root)
+    .filter((d) => d.isDirectory())
+    .map((d) => d.name)
+    .filter((n) => !requireBundle || fs.existsSync(path.join(root, n, 'bundle', 'index.js')))
+    .sort();
+  if (names.length === 0) {
+    throw new Error(
+      requireBundle
+        ? `未找到含 bundle/index.js 的 ${kind} 版本目录: ${root}`
+        : `未找到 ${kind} 版本目录: ${root}`,
+    );
+  }
+  return names[names.length - 1];
+}
+
+// 在目录下按前缀匹配 <prefix>*.js，取字典序最大者（Hana 升级后产物文件名 hash 会变）
+function findAssetFile(dir, prefix) {
+  const names = listDirEntries(dir)
+    .filter((d) => d.isFile() && d.name.startsWith(prefix) && d.name.endsWith('.js'))
+    .map((d) => d.name)
+    .sort();
+  if (names.length === 0) {
+    throw new Error(`未找到 ${prefix}*.js: ${dir}`);
+  }
+  return names[names.length - 1];
+}
+
+// ---------- 受检文件解析（随 home 动态发现） ----------
 // key: 内部代号；label: 显示用文件名；rel: 相对 <home>/artifacts 的路径
-const FILES = {
-  sb: {
-    label: 'SendButton-BHh1P3ff.js',
-    rel: path.join('renderer', R_VERSION, 'assets', 'SendButton-BHh1P3ff.js'),
-  },
-  rail: {
-    label: 'WorkspaceCompanionRail-_O9uAFJI.js',
-    rel: path.join('renderer', R_VERSION, 'assets', 'WorkspaceCompanionRail-_O9uAFJI.js'),
-  },
-  server: {
-    label: 'index.js（server bundle）',
-    rel: path.join('server', S_VERSION, 'bundle', 'index.js'),
-  },
+function resolveFiles(home) {
+  const rendererVer = latestVersionDir(home, 'renderer', false);
+  const serverVer = latestVersionDir(home, 'server', true);
+  const assets = path.join(home, 'artifacts', 'renderer', rendererVer, 'assets');
+  const sbName = findAssetFile(assets, 'SendButton-');
+  const railName = findAssetFile(assets, 'WorkspaceCompanionRail-');
+  return {
+    rendererVer,
+    serverVer,
+    files: {
+      sb: {
+        label: sbName,
+        rel: path.join('renderer', rendererVer, 'assets', sbName),
+      },
+      rail: {
+        label: railName,
+        rel: path.join('renderer', rendererVer, 'assets', railName),
+      },
+      server: {
+        label: 'index.js（server bundle）',
+        rel: path.join('server', serverVer, 'bundle', 'index.js'),
+      },
+    },
+  };
+}
+
+// 自测用的文件表（仅 label 参与输出；自测不打印明细，取占位名即可）
+const SELFTEST_FILES = {
+  sb: { label: 'SendButton-*.js（内存样本）' },
+  rail: { label: 'WorkspaceCompanionRail-*.js（内存样本）' },
+  server: { label: 'index.js（server bundle 内存样本）' },
 };
 
 // ---------- 检查项定义（7 项，与 apply-sessionpath-patch.cjs 的替换目标一一对应） ----------
@@ -130,8 +204,8 @@ function jotHasSessionPath(src) {
 
 // ---------- 组合检测 ----------
 
-// contents: { key: 文件内容字符串 | null }（null = 文件缺失）
-function runChecks(contents) {
+// contents: { key: 文件内容字符串 | null }（null = 文件缺失）；files: resolveFiles 的 files 表
+function runChecks(contents, files) {
   const results = [];
   let allOk = true;
   for (const c of CHECKS) {
@@ -151,7 +225,7 @@ function runChecks(contents) {
         snippet = ok ? content.slice(content.indexOf(c.needle)) : null;
       }
     }
-    const res = { id: c.id, file: FILES[c.key].label, desc: c.desc, needle: c.needle, ok, snippet, missing, note: null };
+    const res = { id: c.id, file: files[c.key].label, desc: c.desc, needle: c.needle, ok, snippet, missing, note: null };
     if (!ok) {
       allOk = false;
       if (c.kind === 'jot' && !missing) {
@@ -232,13 +306,13 @@ const SERVER_ORIG = `
 
 function runSelfTest() {
   // 场景1：补丁齐全 → 期望 PASS（7/7 命中）
-  const s1 = runChecks({ sb: SB_PATCHED, rail: RAIL_PATCHED, server: SERVER_PATCHED });
+  const s1 = runChecks({ sb: SB_PATCHED, rail: RAIL_PATCHED, server: SERVER_PATCHED }, SELFTEST_FILES);
   // 场景2：补丁全部丢失 → 期望 FAIL（7/7 未命中，无误报）
-  const s2 = runChecks({ sb: SB_ORIG, rail: RAIL_ORIG, server: SERVER_ORIG });
+  const s2 = runChecks({ sb: SB_ORIG, rail: RAIL_ORIG, server: SERVER_ORIG }, SELFTEST_FILES);
   // 场景3：部分丢失（SendButton 在、其余丢失）→ 期望 FAIL（4 命中 + 3 未命中）
-  const s3 = runChecks({ sb: SB_PATCHED, rail: RAIL_ORIG, server: SERVER_ORIG });
+  const s3 = runChecks({ sb: SB_PATCHED, rail: RAIL_ORIG, server: SERVER_ORIG }, SELFTEST_FILES);
   // 场景4：文件缺失 → 期望 FAIL（缺失文件归为未命中）
-  const s4 = runChecks({ sb: null, rail: RAIL_PATCHED, server: SERVER_PATCHED });
+  const s4 = runChecks({ sb: null, rail: RAIL_PATCHED, server: SERVER_PATCHED }, SELFTEST_FILES);
 
   const t1 = s1.allOk === true;
   const t2 = !s2.allOk && s2.results.every((r) => !r.ok);
@@ -256,7 +330,9 @@ function runSelfTest() {
 // ---------- 入口 ----------
 
 function main() {
-  if (process.argv[2] === '--selftest') {
+  const argv = process.argv.slice(2);
+
+  if (argv.includes('--selftest')) {
     console.log('=== 自测模式（内存样本） ===');
     if (runSelfTest()) {
       console.log('自测全部通过');
@@ -266,14 +342,27 @@ function main() {
     process.exit(1);
   }
 
-  const homeDir = process.argv[2] || DEFAULT_HOME;
+  // home：位置参数 > 环境变量（HANA_HOME → SIDECHAT_HOME）> 本机默认
+  const positional = argv.find((a) => !a.startsWith('-')) || null;
+  const home = resolveHome(positional);
   console.log('=== 「sessionPath 注入」补丁检测 ===');
-  console.log(`受检目录: ${path.join(homeDir, 'artifacts')}`);
+  console.log(`受检目录: ${path.join(home, 'artifacts')}`);
+
+  // 版本目录与产物文件名自动发现（失败即报错退出，不静默降级）
+  let resolved;
+  try {
+    resolved = resolveFiles(home);
+  } catch (e) {
+    console.log(`✗ ${e.message}`);
+    process.exit(1);
+  }
+  console.log(`版本目录: renderer=${resolved.rendererVer} / server=${resolved.serverVer}（自动发现）`);
+  const FILES = resolved.files;
 
   // 读取三个受检文件（缺失 / 读取失败记为 null）
   const contents = {};
   for (const key of Object.keys(FILES)) {
-    const abs = path.join(homeDir, 'artifacts', FILES[key].rel);
+    const abs = path.join(home, 'artifacts', FILES[key].rel);
     if (!fs.existsSync(abs)) {
       console.log(`! 文件缺失: ${abs}`);
       contents[key] = null;
@@ -287,7 +376,7 @@ function main() {
     }
   }
 
-  const r = runChecks(contents);
+  const r = runChecks(contents, FILES);
   for (const res of r.results) printResult(res);
 
   if (r.allOk) {

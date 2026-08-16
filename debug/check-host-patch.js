@@ -2,7 +2,9 @@
 // check-host-patch.js —— Hana server bundle 补丁检测脚本（CLI 薄壳）
 // 核心逻辑见 ../lib/patch-check.mjs（scanSetLiterals / isJotPatch / checkHostPatch）。
 //
-// 用法：node check-host-patch.js [bundle 路径]
+// 用法：node check-host-patch.js [bundle 路径] [--home <path>]
+//   --home：.hanako 家目录（Hana 数据根）；缺省按 环境变量 HANA_HOME → SIDECHAT_HOME → 本机默认 解析。
+//   env/默认兜底仅在没有 bundle 位置参数（需要自动定位）时生效；给了 bundle 路径时只看 --home。
 //   缺省路径：自动定位 <HOME>/artifacts/server/<最新>/bundle/index.js
 // 附带自测：node check-host-patch.js --selftest（内存样本验证扫描与判定逻辑，不落盘）
 //
@@ -13,9 +15,11 @@
 
 'use strict';
 
+const fs = require('fs');
 const path = require('path');
 
 const BAK_NAME = 'index.js.bak-20260815';
+// 本机默认，发布场景用 env/参数覆盖
 const DEFAULT_HOME = 'C:\\Users\\<USER>\\.hanako';
 
 function truncate(s, n) {
@@ -25,7 +29,7 @@ function truncate(s, n) {
 function printRecovery(target) {
   const dir = path.dirname(target);
   const bak = path.join(dir, BAK_NAME);
-  const bakExists = require('fs').existsSync(bak);
+  const bakExists = fs.existsSync(bak);
   console.log('\n--- 恢复指引 ---');
   console.log(
     '1. 备份检查：' +
@@ -45,10 +49,42 @@ function printRecovery(target) {
   }
 }
 
+// ---------- 参数与 home 解析 ----------
+
+function parseArgs(argv) {
+  const args = { selftest: false, home: null, bundle: null };
+  for (let i = 2; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === '--selftest') {
+      args.selftest = true;
+    } else if (a === '--home') {
+      const v = argv[i + 1];
+      if (!v || v.startsWith('--')) {
+        console.error('✗ --home 需要 <path> 参数（.hanako 家目录）');
+        process.exit(1);
+      }
+      args.home = v;
+      i += 1;
+    } else if (!a.startsWith('-')) {
+      args.bundle = a; // 位置参数：bundle 路径（保持原有语义）
+    }
+  }
+  return args;
+}
+
+// --home > 环境变量（HANA_HOME → SIDECHAT_HOME）> 本机默认
+function resolveHome(cliHome) {
+  if (cliHome) return cliHome;
+  if (process.env.HANA_HOME) return process.env.HANA_HOME;
+  if (process.env.SIDECHAT_HOME) return process.env.SIDECHAT_HOME;
+  return DEFAULT_HOME;
+}
+
 async function main() {
   const mod = await import('../lib/patch-check.mjs');
+  const args = parseArgs(process.argv);
 
-  if (process.argv[2] === '--selftest') {
+  if (args.selftest) {
     console.log('=== 自测模式（内存样本） ===');
     const r = mod.runPatchSelfTest();
     console.log(`样本1（jot 含 "token" + 天然 token Set 干扰）: ${r.r1 ? 'PASS ✓' : 'FAIL ✗ 漏报'}`);
@@ -59,19 +95,28 @@ async function main() {
   }
 
   console.log('=== Hana server bundle 补丁检测 ===');
-  let target = process.argv[2] || null;
+  let home;
+  let target = args.bundle || null;
   if (!target) {
-    target = mod.findLatestBundle(DEFAULT_HOME);
+    // 自动定位：home 的 env/默认兜底在此生效
+    home = resolveHome(args.home);
+    if (!fs.existsSync(home)) {
+      console.log(`结果: FAIL（home 目录不存在: ${home}）`);
+      process.exit(1);
+    }
+    target = mod.findLatestBundle(home);
     if (!target) {
-      console.log(`结果: FAIL（未找到 ${DEFAULT_HOME}\\artifacts\\server\\*\\bundle\\index.js）`);
+      console.log(`结果: FAIL（未找到 ${path.join(home, 'artifacts', 'server', '*', 'bundle', 'index.js')}）`);
       process.exit(1);
     }
     console.log(`bundle: ${target}（自动定位最新版本）`);
   } else {
+    // 显式 bundle 路径：只看 --home（env/默认兜底不参与）
+    home = args.home || DEFAULT_HOME;
     console.log(`bundle: ${target}`);
   }
 
-  const result = mod.checkHostPatch(DEFAULT_HOME);
+  const result = mod.checkHostPatch(home);
   if (result.status === 'pass') {
     console.log(`new Set([...]) 字面量: ${result.setCount} 个`);
     console.log('结果: PASS（补丁在 —— widget iframe 的 ticket 校验已放行 token）');
