@@ -400,7 +400,12 @@ async function pollStateOnce() {
     // 会话失配回退：列表刷新后当前选中会话可能已被隔离过滤/删除（主对话切换/隔离），
     // 触发器仍显示旧标题但 currentId 是旧值，后续发消息/删除会打到不可见会话。
     // 自动回退到新列表第一个（空列表时 openSession(null) 走空态；openSession 会收起列表）。
-    if (state.currentId && !state.sessions.some((s) => s.id === state.currentId)) {
+    // 创建期除外（!state.creating）：newSession 正把新建会话设为当前会话（快照耗时下 POST
+    // 未返回期间轮询会先把新会话写进列表，形成交错），若此时触发回退会把 currentId 改写为
+    // null/其它会话，并经 openSeq 丢弃 newSession 的 openSession 结果，导致「新建后未进入」
+    // （0→1 首建时列表为空，openSession(null) 直接回到「无会话」空态）。创建期间交给
+    // newSession 自己收口。
+    if (!state.creating && state.currentId && !state.sessions.some((s) => s.id === state.currentId)) {
       await openSession(state.sessions[0]?.id ?? null);
     }
   }
@@ -497,7 +502,10 @@ async function newSession() {
       addMsg('sys', res.error ?? '新建失败');
       return;
     }
-    state.sessions = [res.session, ...state.sessions];
+    // 去重：轮询可能在 POST 未返回期间（快照耗时）已把新会话写进 state.sessions，
+    // 这里按 id 去重后再置顶，避免同一会话出现两条重复项（重复项还会让后续轮询的
+    // idSeq 恒不相等，反复触发列表替换）。
+    state.sessions = [res.session, ...state.sessions.filter((s) => s.id !== res.session.id)];
     renderSessionList();
     await openSession(res.session.id);
   } finally {
