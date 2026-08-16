@@ -195,3 +195,4 @@ body {
 .msg .tok-com { color: var(--md-tok-com, #8b949e); font-style: italic; }
 .msg .tok-kw { color: var(--md-tok-kw, #9b6cf0); }
 .msg .tok-num { color: var(--md-tok-num, #d1863c); }
+.msg .tok-func { color: var(--md-tok-func, #56b6c2); }

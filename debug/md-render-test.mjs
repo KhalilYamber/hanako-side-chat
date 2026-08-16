@@ -90,6 +90,11 @@ const linkParen3 = mdToHtml('[x](https://a.b/f(d))');
 check('URL 末尾括号不误吞', linkParen3.includes('<a href="https://a.b/f(d)"') && notContains(linkParen3, '</a>)'), linkParen3);
 const linkNormal = mdToHtml('[x](https://a.b/foo)');
 check('普通链接不回归', linkNormal.includes('<a href="https://a.b/foo"'), linkNormal);
+check('链接带标题不回归', mdToHtml('[x](a "b")').includes('<a href="a"'), '');
+check('链接含括号带标题', mdToHtml('[x](https://a.b/c_(d) "t")').includes('href="https://a.b/c_(d)"'), '');
+check('链接前文括号文本不吞并', mdToHtml('[a] [b](url)') === '<p>[a] <a href="url" target="_blank" rel="noopener noreferrer">b</a></p>', mdToHtml('[a] [b](url)'));
+check('链接前文文本保留', mdToHtml('正文 [x](a) 后文').includes('正文 <a href="a"') && mdToHtml('正文 [x](a) 后文').includes('</a> 后文'));
+check('链接标题后文本不丢字', mdToHtml('[x](a) "b" 后文').includes('</a> "b" 后文'), '');
 
 // ---------- 代码高亮（T2b） ----------
 check('高亮: JS 关键字', highlight('const', 'js').includes('<span class="tok-kw">const</span>'));
@@ -98,6 +103,7 @@ check('高亮: 模板串', highlight('`a${b}`', 'js').includes('<span class="tok
 check('高亮: 行注释', highlight('// 注释', 'js').includes('<span class="tok-com">// 注释</span>'));
 check('高亮: 块注释', highlight('/* x */', 'js').includes('<span class="tok-com">/* x */</span>'));
 check('高亮: 数字', highlight('42', 'js').includes('<span class="tok-num">42</span>'));
+check('高亮: 函数名', highlight('foo(1)', 'js').includes('<span class="tok-func">foo</span>'));
 check('高亮: 转义防注入', notContains(highlight('const a = "<script>"', 'js'), '<script>'), highlight('const a = "<script>"', 'js'));
 check('高亮: 未知语言不染色', notContains(highlight('const x', 'python'), 'tok-kw'));
 check('高亮: 空代码块不崩', highlight('', 'js') === '');
@@ -107,6 +113,7 @@ const hlCode = 'const a = "hi" + 1;\n// 注释';
 check('高亮后复制文本仍正确', htmlToText(highlight(hlCode, 'js')) === hlCode, htmlToText(highlight(hlCode, 'js')));
 const hlBlock = mdToHtml('```js\nconst a = 1;\n```');
 check('代码块高亮集成', hlBlock.includes('<span class="tok-kw">const</span>'), hlBlock);
+check('高亮输出过 sanitize 保留', sanitizeHtml(mdToHtml('```js\nconst a = 1;\n```')).includes('class="tok-kw"'));
 
 // ---------- 汇总 ----------
 const passed = results.filter((r) => r.ok).length;

@@ -92,8 +92,10 @@
       .replace(/`([^`\n]+)`/g, '<code>$1</code>');
   }
 
-  /** 行内链接解析：URL 括号配对（T2a）。[label] 部分保持原语义；URL 内 ( 深度 +1、) 深度 -1，
-   *  深度归零的 ) 才是链接结束，从而 URL 可含括号不被截断。危险协议仍由 sanitizeHtml 兜底。 */
+  /** 行内链接解析：URL 括号配对（T2a）。[label] 取首个 ] 且其后紧跟 (（与旧实现一致）；
+   *  URL 内 ( 深度 +1、) 深度 -1，深度归零的 ) 才算链接结束（该 ) 即链接闭合符）；
+   *  空白终止 URL，空白后允许可选 "title"/'title'（仅解析不输出，与旧实现一致）。
+   *  危险协议仍由 sanitizeHtml 兜底。 */
   function parseLinks(text) {
     var out = '';
     var i = 0;
@@ -101,38 +103,47 @@
     while (i < n) {
       var open = text.indexOf('[', i);
       if (open < 0) { out += text.slice(i); break; }
-      out += text.slice(i, open);
-      // 找 [label]( 起始：首个 ] 后紧跟 (
-      var close = -1;
-      var k = open + 1;
-      while (k < n - 1) {
-        if (text[k] === ']' && text[k + 1] === '(') { close = k; break; }
-        k++;
+      out += text.slice(i, open); // 链接前的文本原样保留
+      // [label]( 起始：首个 ] 后紧跟 (
+      var close = text.indexOf(']', open + 1);
+      if (close < 0 || close === open + 1 || text[close + 1] !== '(') {
+        out += '['; i = open + 1; continue;
       }
-      if (close < 0) { out += '['; i = open + 1; continue; }
       var label = text.slice(open + 1, close);
-      // 括号配对扫描 URL
+      // 括号配对扫描 URL：深度归零的 ) 结束；空白提前终止
       var depth = 1;
       var j = close + 2;
-      var urlEnd = -1;
+      var urlEnd = -1; // 深度归零的 ')' 位置（该 ')' 同时是链接闭合符）
+      var wsEnd = -1;  // 空白位置（URL 到空白为止）
       while (j < n) {
         var ch = text[j];
         if (ch === '(') depth++;
         else if (ch === ')') {
           depth--;
           if (depth === 0) { urlEnd = j; break; }
-        }
+        } else if (/\s/.test(ch)) { wsEnd = j; break; }
         j++;
       }
-      if (urlEnd < 0) { out += '['; i = open + 1; continue; }
-      var url = text.slice(close + 2, urlEnd);
-      // 可选 "title"（链接后空白 + 引号串）：消费后丢弃（与原实现一致）
-      var tm = /^\s+"[^"]*"/.exec(text.slice(urlEnd + 1));
-      var end = urlEnd + (tm ? 1 + tm[0].length : 0);
-      // URL 非空且不含空白才算链接，否则按普通文本处理（保持原 [^)\s] 的空白约束）
-      if (!url.trim() || /\s/.test(url)) { out += '['; i = open + 1; continue; }
+      var urlTo;
+      var after;
+      if (urlEnd >= 0) {
+        urlTo = urlEnd;
+        after = urlEnd + 1; // 该 ')' 已作为链接闭合符消费
+      } else if (wsEnd >= 0) {
+        urlTo = wsEnd;
+        // 空白后的剩余部分：允许可选标题，随后须以 ')' 收尾
+        var rest = text.slice(wsEnd);
+        var tm = /^\s*(?:"[^"]*"|'[^']*')/.exec(rest);
+        var consumed = tm ? tm[0].length : 0;
+        if (rest[consumed] !== ')') { out += '['; i = open + 1; continue; }
+        after = wsEnd + consumed + 1;
+      } else {
+        out += '['; i = open + 1; continue;
+      }
+      var url = text.slice(close + 2, urlTo);
+      if (!url) { out += '['; i = open + 1; continue; } // 空 URL 不算链接
       out += '<a href="' + escapeHtml(url) + '" target="_blank" rel="noopener noreferrer">' + inlineInner(label) + '</a>';
-      i = end + 1;
+      i = after;
     }
     return out;
   }
@@ -145,7 +156,7 @@
     class: 1, new: 1, async: 1, await: 1, try: 1, catch: 1, throw: 1, import: 1, export: 1, from: 1,
   };
 
-  /** 极简 tokenizer：按字符扫描，识别字符串（含模板串简易版）/ 行注释与块注释 / 关键字 / 数字。
+  /** 极简 tokenizer：按字符扫描，识别字符串（含模板串简易版）/ 行注释与块注释 / 关键字 / 数字 / 函数名。
    *  只对 js/javascript/ts/typescript/json 染色（json 只染字符串与数字），其它语言原样转义。
    *  输出先 HTML 转义再包 span，防注入；span 包裹不影响 code 元素 textContent（复制仍是纯文本）。 */
   function highlight(code, lang) {
@@ -197,12 +208,19 @@
         i += numLen;
         continue;
       }
-      // 关键字 / 标识符
+      // 关键字 / 标识符（json 只染字符串与数字）
       if (/[A-Za-z_$]/.test(c)) {
         var w = i + 1;
         while (w < n && /[A-Za-z0-9_$]/.test(s[w])) w++;
         var word = s.slice(i, w);
-        emit(word, (!isJson && HL_KEYWORDS[word]) ? 'tok-kw' : null);
+        if (!isJson && HL_KEYWORDS[word]) {
+          emit(word, 'tok-kw');
+        } else {
+          // 函数名：单词后跟 '('（允许空格/制表符）
+          var f = w;
+          while (f < n && (s[f] === ' ' || s[f] === '\t')) f++;
+          emit(word, (!isJson && s[f] === '(') ? 'tok-func' : null);
+        }
         i = w;
         continue;
       }
