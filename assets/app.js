@@ -196,7 +196,7 @@ function updateNewBtn() {
 function addMsg(role, text) {
   const el = document.createElement('div');
   el.className = `msg ${role}`;
-  el.textContent = text;
+  el.innerHTML = MD.sanitizeHtml(MD.mdToHtml(text));
   $('messages').appendChild(el);
   $('messages').scrollTop = $('messages').scrollHeight;
 }
@@ -245,7 +245,7 @@ function fillAssistantMsg(wrap, msg) {
       b.className = 'body';
       wrap.appendChild(b);
     }
-    b.textContent = msg.text;
+    b.innerHTML = MD.sanitizeHtml(MD.mdToHtml(msg.text));
   } else if (b) {
     b.remove();
   }
