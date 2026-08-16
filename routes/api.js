@@ -241,19 +241,10 @@ export default function registerSideChatRoutes(app, ctx) {
       // 实测生效（会话 model_change 记录正确）。绑定主对话 agent（人格由官方管道注入）。
       const cfg = await readConfig(pctx);
       const modelSpec = parseModelSpec(cfg.model);
-      const res = await pctx.bus.request('session:create', {
-        visibility: 'plugin_private',
-        ownerPluginId: pctx.pluginId,
-        kind: 'sidechat',
-        cwd: pctx.dataDir,
+      const { sessionId, sessionPath } = await (await loadAdapter()).createSession(pctx, {
         agentId: await resolveBoundAgent(pctx, c),
         ...(modelSpec ? { model: modelSpec } : {}),
       });
-      const sessionId = res?.sessionId ?? res?.session?.id ?? res?.sessionRef?.sessionId ?? null;
-      const sessionPath = res?.sessionPath ?? res?.session?.sessionPath ?? res?.sessionRef?.sessionPath ?? null;
-      if (!sessionId || !sessionPath) {
-        throw new Error(`session:create 返回结构不完整：${JSON.stringify(res).slice(0, 300)}`);
-      }
       // 绑定主会话：创建时 resolveMainSessionPath 解析的「最近活跃主会话」路径（前端 SSE 追踪值优先）。
       // 解析失败/无主会话时为 null（未绑定，前端提示条不显示，行为与旧版一致）。
       let boundMain = null;
@@ -312,7 +303,7 @@ export default function registerSideChatRoutes(app, ctx) {
     await lazyBindUnbound(pctx, c, entry);
     let history = [];
     try {
-      const res = await pctx.bus.request('session:history', { sessionPath: entry.sessionPath, limit: 200 });
+      const res = await (await loadAdapter()).readHistory(pctx, entry.sessionPath, 200);
       history = normalizeHistory(res);
     } catch (e) {
       return c.json({ ok: false, error: `读取历史失败：${e?.message ?? e}` });
@@ -364,7 +355,7 @@ export default function registerSideChatRoutes(app, ctx) {
 
     // 3. 发送（官方管道，密钥由 Hana 运行时解析）
     try {
-      await pctx.bus.request('session:send', {
+      await (await loadAdapter()).sendMessage(pctx, {
         sessionPath: entry.sessionPath,
         text,
         context: {
@@ -758,7 +749,7 @@ async function readMainRounds(pctx, sessionPath) {
   if (!rounds.length) {
     // 文件直读无结果：兜底官方通道（limit 500 会被 host 截到 200，仅作保底）
     try {
-      const res = await pctx.bus.request('session:history', { sessionPath, limit: 500 });
+      const res = await adapter.readHistory(pctx, sessionPath, 500);
       return { rounds: lib.roundsFromHistory(res?.messages), viaApi: true, apiError: null };
     } catch (e) {
       return { rounds: [], viaApi: true, apiError: String(e?.message ?? e) };
