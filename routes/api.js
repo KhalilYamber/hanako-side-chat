@@ -10,6 +10,10 @@ let _lib = null;
 async function loadLib() {
   return _lib ??= import(`../lib/main-context.js?t=${Date.now()}`);
 }
+let _adapter = null;
+async function loadAdapter() {
+  return _adapter ??= import(`../lib/host-adapter.js?t=${Date.now()}`);
+}
 let _store = null;
 async function loadStore() {
   return _store ??= import(`../lib/store.js?t=${Date.now()}`);
@@ -44,7 +48,7 @@ export default function registerSideChatRoutes(app, ctx) {
     // 改按「最近活跃 public 主会话（mtime）」重新定位，返回路径供前端更新追踪。
     const main = await mainSessionInfo(pctx, c, { relocate: c.req.query('relocate') === '1' });
     // 隔离过滤（树枝-树叶模型）：有当前主会话时按归属过滤，无效绑定标记 unbound 透给前端
-    const visible = main?.sessionPath ? filterSessionsByMain(pctx, sessions, main.sessionPath) : sessions;
+    const visible = main?.sessionPath ? await filterSessionsByMain(pctx, sessions, main.sessionPath) : sessions;
     return c.json({ ok: true, config: cfg, sessions: visible, main });
   });
 
@@ -136,6 +140,8 @@ export default function registerSideChatRoutes(app, ctx) {
     const encoder = new TextEncoder();
     const stream = new ReadableStream({
       start: async (controller) => {
+        // adapter 预加载：subscribe 同步回调内不能 await，先取好引用（模块无副作用）
+        const adapter = await loadAdapter();
         let closed = false;
         const send = (payload) => {
           if (closed) return;
@@ -153,7 +159,7 @@ export default function registerSideChatRoutes(app, ctx) {
         const publicSet = new Set();
         const refreshPublic = async (force) => {
           try {
-            const paths = await getPublicSessionPaths(pctx, force);
+            const paths = await adapter.getPublicSessionPaths(pctx, force);
             publicSet.clear();
             for (const p of paths) publicSet.add(p);
           } catch {
@@ -166,7 +172,7 @@ export default function registerSideChatRoutes(app, ctx) {
         let unsubscribe = () => {};
         try {
           unsubscribe = pctx.bus.subscribe((event, sessionPath) => {
-            if (sessionPath && !publicSet.has(normSessionPath(sessionPath))) {
+            if (sessionPath && !publicSet.has(adapter.normSessionPath(sessionPath))) {
               return; // 非 public 主会话（辅助会话自身/其它）：不透传，避免污染
             }
             send({ type: 'main-changed', eventType: event?.type ?? null, sessionPath: sessionPath || null });
@@ -252,7 +258,7 @@ export default function registerSideChatRoutes(app, ctx) {
       // 解析失败/无主会话时为 null（未绑定，前端提示条不显示，行为与旧版一致）。
       let boundMain = null;
       try {
-        boundMain = await resolveMainSessionPath(pctx, c);
+        boundMain = await (await loadAdapter()).resolveMainSessionPath(pctx, c);
       } catch {
         boundMain = null;
       }
@@ -290,7 +296,7 @@ export default function registerSideChatRoutes(app, ctx) {
     const sessions = (await loadStore()).listSessions(pctx.dataDir, requestAgentId(c));
     // 与 /api/state 一致：按当前主会话隔离过滤（mainSessionInfo 走 skipSummary，零 LLM）
     const main = await mainSessionInfo(pctx, c);
-    const visible = main?.sessionPath ? filterSessionsByMain(pctx, sessions, main.sessionPath) : sessions;
+    const visible = main?.sessionPath ? await filterSessionsByMain(pctx, sessions, main.sessionPath) : sessions;
     return c.json({ ok: true, sessions: visible });
   });
 
@@ -395,7 +401,7 @@ export default function registerSideChatRoutes(app, ctx) {
     }
     const mainPath = String(body.mainPath ?? '').trim();
     // 白名单校验：必须是当前 agent 的 <HOME>/agents/<agentId>/sessions/*.jsonl 路径
-    if (!isAgentSessionPath(pctx, mainPath, requestAgentId(c))) {
+    if (!(await loadAdapter()).isAgentSessionPath(pctx, mainPath, requestAgentId(c))) {
       return c.json({ ok: false, error: 'mainPath 非法：必须是主对话会话路径' });
     }
     (await loadStore()).upsertSession(pctx.dataDir, { id, boundMain: mainPath });
@@ -603,134 +609,16 @@ async function readConfig(ctx) {
   return base;
 }
 
-// 从 widget 请求里解析主会话身份（T3 修正版 + 2026-08-16 主会话绑定增强）
-// host 打开 widget 的 iframe URL 会带 agentId query（X-Hana-Plugin-Surface-Session 头
-// 在转发到插件路由前已被 server 剥离，不可用）。主会话解析优先级：
-//   0. query 显式 sessionPath（host 补丁注入的「当前打开主对话」真实路径，白名单校验）
-//   1. 前端透传的 mainPath（SSE 事件实时追踪的「最近活跃主会话」，白名单 + public 校验）
-//   2. query 显式 sessionId/session（调试，走首行扫描兜底）
-//   3. agentId → session:list 取最近修改的 public 会话
-//   4. mtime 兜底（仅当官方通道不可用）
-// skipMainPath=true（relocate 重定位）时跳过 1，直接走 2/3/4（mtime 系重新定位）。
-async function resolveMainSessionPath(pctx, c, skipMainPath = false) {
-  const agentId = c.req.query('agentId') || '';
-  const tryPath = (p) => (isAgentSessionPath(pctx, p, agentId) ? p : null);
-  // 0. host 补丁注入的 sessionPath（iframe URL 携带的「当前打开主对话」真实路径），最优先
-  const sp = c.req.query('sessionPath') || '';
-  if (sp && sp.includes('.jsonl')) {
-    const ok = tryPath(sp);
-    if (ok) return ok;
-    // 白名单不过：忽略，继续走后续兜底
-  }
-  // 1. 前端 SSE 追踪的最近活跃主会话（次精确）
-  const mp = c.req.query('mainPath') || '';
-  if (!skipMainPath && mp) {
-    if (isAgentSessionPath(pctx, mp, agentId)) {
-      // 追加 public 校验：辅助会话（plugin_private）路径同样能过白名单，必须排除，
-      // 否则 SSE 污染会让主会话定位指向辅助会话自身（参考上下文自噬）
-      const publics = await getPublicSessionPaths(pctx);
-      if (publics.has(normSessionPath(mp))) return mp;
-    }
-    // 非法/非 public：忽略，继续走后续兜底
-  }
-  // 2. query 显式 sessionId/session（调试：非路径形式的会话 id，走首行扫描兜底）
-  const q = c.req.query('sessionId') || c.req.query('session') || '';
-  if (q) {
-    try {
-      const root = (await loadLib()).agentsRoot(pctx);
-      if (fs.existsSync(root)) {
-        for (const agentDir of fs.readdirSync(root)) {
-          const sessDir = path.join(root, agentDir, 'sessions');
-          if (!fs.existsSync(sessDir)) continue;
-          for (const f of fs.readdirSync(sessDir)) {
-            if (!f.endsWith('.jsonl')) continue;
-            const p = path.join(sessDir, f);
-            try {
-              const first = fs.readFileSync(p, 'utf8').split(/\r?\n/)[0];
-              if (first && first.includes(q)) return p;
-            } catch {
-              // 跳过
-            }
-          }
-        }
-      }
-    } catch {
-      // 忽略
-    }
-  }
-  // 3. agentId → 官方 session:list，取最近修改的 public 会话（主对话）
-  if (agentId) {
-    try {
-      const res = await pctx.bus.request('session:list', { agentId });
-      const publics = (res?.sessions ?? []).filter(
-        (s) => s && s.path && s.visibility === 'public'
-      );
-      if (publics.length) {
-        publics.sort((a, b) => (b.modified ?? 0) - (a.modified ?? 0));
-        return publics[0].path;
-      }
-    } catch {
-      // 继续走文件兜底
-    }
-  }
-  // 4. mtime 兜底（仅当官方通道不可用时，按当前 agent 过滤，REVIEW2 发现 13）
-  return (await loadLib()).findMainSessionFile(pctx, null, agentId);
-}
-
-// 白名单：路径必须是 <HOME>/agents/<agentId>/sessions/*.jsonl 的绝对路径
-// （防御 query 注入任意路径读取）
-function isAgentSessionPath(pctx, p, agentId) {
-  try {
-    if (typeof p !== 'string' || !p.includes('.jsonl')) return false;
-    const home = path.dirname(path.dirname(pctx.pluginDir));
-    const agentsDir = path.resolve(path.join(home, 'agents'));
-    const rp = path.resolve(p);
-    const norm = (s) => s.replace(/\\/g, '/').toLowerCase();
-    const ad = norm(agentsDir);
-    const rr = norm(rp);
-    if (!rr.startsWith(ad + '/')) return false;
-    if (agentId) {
-      const seg = rr.slice(ad.length + 1).split('/');
-      if (seg[0] !== String(agentId).toLowerCase()) return false;
-    }
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-// public 主会话路径集合（规范化、去重）。带 60 秒全局缓存（SSE 过滤与 mainPath 校验共用）。
-// 失败时返回旧缓存或空集合：SSE 不透传（保守，走 mtime 兜底），功能降级不崩溃。
-async function getPublicSessionPaths(pctx, force = false) {
-  const g = globalThis.__sideChat;
-  const now = Date.now();
-  if (!force && g?.publicPathsCache && now - g.publicPathsCache.ts < 60000) {
-    return g.publicPathsCache.paths;
-  }
-  const paths = new Set();
-  try {
-    const res = await pctx.bus.request('session:list', {});
-    for (const s of res?.sessions ?? []) {
-      if (s && s.path && s.visibility === 'public') paths.add(normSessionPath(s.path));
-    }
-  } catch {
-    // 拉取失败：保持空集合（或旧缓存），下游降级
-  }
-  if (g) g.publicPathsCache = { ts: now, paths };
-  return paths;
-}
-
-// ---------- 主会话隔离（树枝-树叶模型） ----------
-
-// 路径规范化：大小写与 \/ 分隔符统一（与 isAgentSessionPath 里的 norm 写法一致）
-function normSessionPath(p) {
-  return typeof p === 'string' ? p.replace(/\\/g, '/').toLowerCase() : '';
-}
+// 主会话定位（resolveMainSessionPath 五级降级链）与白名单（isAgentSessionPath）、
+// public 路径集合（getPublicSessionPaths）、路径规范化（normSessionPath）等私有函数
+// 已迁入 lib/host-adapter.js（HOST_ADAPTER.md 迁移步骤 1），本文件经由 loadAdapter()
+// 动态引用。以下保留 api.js 自己的业务逻辑。
 
 // boundMain 有效性：白名单路径校验通过 + 指向的文件仍存在。
 // 主对话会话被删除后 boundMain 即失效，归未绑定组，下次使用惰性重绑。
-function isBoundMainValid(pctx, boundMain, agentId) {
-  if (!isAgentSessionPath(pctx, boundMain, agentId)) return false;
+// （async 化：白名单校验已迁入 host-adapter，经动态 import 引用，调用点均处 async 上下文）
+async function isBoundMainValid(pctx, boundMain, agentId) {
+  if (!(await loadAdapter()).isAgentSessionPath(pctx, boundMain, agentId)) return false;
   try {
     return fs.existsSync(boundMain);
   } catch {
@@ -742,13 +630,15 @@ function isBoundMainValid(pctx, boundMain, agentId) {
 //   boundMain === M → 正常组；boundMain 空/无效 → 未绑定组（unbound: true）；
 //   boundMain 为其它主会话 → 隔离（不返回）。
 // 无 M（主会话定位失败）→ 全量返回（兼容旧行为）。纯本地判断，零 LLM。
-function filterSessionsByMain(pctx, sessions, mainPath) {
+// （async 化：路径规范化已迁入 host-adapter，经动态 import 引用，调用点均处 async 上下文）
+async function filterSessionsByMain(pctx, sessions, mainPath) {
+  const adapter = await loadAdapter();
   if (!mainPath || !Array.isArray(sessions)) return sessions ?? [];
-  const m = normSessionPath(mainPath);
+  const m = adapter.normSessionPath(mainPath);
   const out = [];
   for (const s of sessions) {
-    if (isBoundMainValid(pctx, s?.boundMain, s?.agentId)) {
-      if (normSessionPath(s.boundMain) === m) out.push(s);
+    if (await isBoundMainValid(pctx, s?.boundMain, s?.agentId)) {
+      if (adapter.normSessionPath(s.boundMain) === m) out.push(s);
       // 绑定到其它主会话：不返回（树枝-树叶隔离）
     } else {
       // 未绑定或绑定已失效（文件被删）：可见但标记，前端显示「（未绑定）」
@@ -761,8 +651,8 @@ function filterSessionsByMain(pctx, sessions, mainPath) {
 // 惰性归属：未绑定/绑定无效的会话，自动绑定到当前解析的主会话路径（旧数据自然归位，用户无感）。
 // entry 就地更新 boundMain，调用方后续直接使用新绑定。
 async function lazyBindUnbound(pctx, c, entry) {
-  if (!entry || isBoundMainValid(pctx, entry.boundMain, entry.agentId)) return false;
-  const mainPath = await resolveMainSessionPath(pctx, c).catch(() => null);
+  if (!entry || (await isBoundMainValid(pctx, entry.boundMain, entry.agentId))) return false;
+  const mainPath = await (await loadAdapter()).resolveMainSessionPath(pctx, c).catch(() => null);
   if (!mainPath) return false;
   entry.boundMain = mainPath;
   // 归属完整化：旧数据缺 agentId 时一并补写（谁先打开归谁，REVIEW2 发现 22）
@@ -775,8 +665,8 @@ async function lazyBindUnbound(pctx, c, entry) {
 // 参考上下文主会话定位（归属优先）：boundMain 有效则用它，无效/为空才走原解析逻辑
 // （resolveMainSessionPath：mainPath query → sessionId → agent 最近会话 → mtime）。
 async function resolveContextSessionPath(pctx, c, entry) {
-  if (entry && isBoundMainValid(pctx, entry.boundMain, entry.agentId)) return entry.boundMain;
-  return resolveMainSessionPath(pctx, c);
+  if (entry && (await isBoundMainValid(pctx, entry.boundMain, entry.agentId))) return entry.boundMain;
+  return (await loadAdapter()).resolveMainSessionPath(pctx, c);
 }
 
 // 主会话信息：优先本地文件直读（parseSessionJsonl，无 200 条上限与过滤），
@@ -788,9 +678,9 @@ async function collectMainContext(pctx, c, cfg, opts = {}) {
   // opts.relocate=true（重定位模式）：显式 sessionPath 仍归属优先，其余情况跳过前端
   // mainPath，按 mtime 系兜底重新定位（主对话切换纠正）。
   const sessionPath =
-    opts.sessionPath && isAgentSessionPath(pctx, opts.sessionPath, requestAgentId(c))
+    opts.sessionPath && (await loadAdapter()).isAgentSessionPath(pctx, opts.sessionPath, requestAgentId(c))
       ? opts.sessionPath
-      : await resolveMainSessionPath(pctx, c, !!opts.relocate);
+      : await (await loadAdapter()).resolveMainSessionPath(pctx, c, !!opts.relocate);
   if (!sessionPath) {
     return { ok: false, error: '未找到主会话', stats: { rounds: 0, mode: cfg.contextMode }, rounds: [], reference: '' };
   }
@@ -857,9 +747,10 @@ async function collectMainContext(pctx, c, cfg, opts = {}) {
 // false=文件直读；apiError 仅 history 路径失败时记录。
 async function readMainRounds(pctx, sessionPath) {
   const lib = await loadLib();
+  const adapter = await loadAdapter();
   let rounds = [];
   try {
-    rounds = lib.parseSessionJsonl(sessionPath);
+    rounds = adapter.parseSessionJsonl(sessionPath);
   } catch (e) {
     // parseSessionJsonl 内部已容错返回 []，此处防御未来改动
     rounds = [];
@@ -1031,7 +922,7 @@ async function mainSessionInfo(pctx, c, opts = {}) {
 // 绑定的 agent：主对话 agent（人格由官方管道注入）。失败返回 undefined（系统默认）。
 async function resolveBoundAgent(pctx, c) {
   try {
-    const mainPath = await resolveMainSessionPath(pctx, c);
+    const mainPath = await (await loadAdapter()).resolveMainSessionPath(pctx, c);
     if (mainPath) {
       const agentId = path.basename(path.dirname(path.dirname(mainPath)));
       return agentId;

@@ -37,6 +37,7 @@ const SYNTAX_FILES = [
   'routes/api.js',
   'routes/widget.js',
   'lib/main-context.js',
+  'lib/host-adapter.js',
   'lib/store.js',
   'lib/patch-check.mjs',
   'assets/app.js',
