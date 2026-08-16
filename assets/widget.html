@@ -10,27 +10,27 @@
     // 且 host 有 5 秒超时，所以这里用 inline 脚本在 HTML 解析时立即发送，不依赖 app.js 的加载。
     try { window.parent.postMessage({ type: "ready" }, "*"); } catch (e) {}
   </script>
-  <link rel="stylesheet" href="/api/plugins/side-chat/assets/widget.css?v=12">
+  <link rel="stylesheet" href="/api/plugins/side-chat/assets/widget.css?v=13">
 </head>
 <body data-surface="widget">
   <div id="app">
     <!-- 顶栏 -->
     <header id="topbar">
       <div id="session-picker">
-        <select id="session-select"></select>
-        <!-- 重命名编辑条：编辑态隐藏 select 并显示此条（含输入框 + 保存/取消 + 就地错误提示） -->
-        <div id="rename-bar" class="hidden">
-          <input id="rename-input" class="rename-input" placeholder="输入新标题…">
-          <button id="btn-rename-ok" class="rename-btn" title="保存">✓</button>
-          <button id="btn-rename-cancel" class="rename-btn" title="取消">✕</button>
-          <div id="rename-error" class="rename-error hidden"></div>
+        <div id="session-picker-main">
+          <!-- ：自定义会话选择器：触发器显示当前会话标题（含未绑定前缀），点击展开下方列表浮层 -->
+          <button id="session-trigger" title="选择会话"><span id="session-trigger-label">（暂无会话，点 ＋ 新建）</span></button>
+          <!-- 重命名编辑条：编辑态隐藏触发器并显示此条（含输入框 + 保存/取消 + 就地错误提示） -->
+          <div id="rename-bar" class="hidden">
+            <input id="rename-input" class="rename-input" placeholder="输入新标题…">
+            <button id="btn-rename-ok" class="rename-btn" title="保存">✓</button>
+            <button id="btn-rename-cancel" class="rename-btn" title="取消">✕</button>
+            <div id="rename-error" class="rename-error hidden"></div>
+          </div>
+          <!-- 会话列表浮层：点击触发器展开；列表项左键切换会话，右键弹菜单（操作目标=该项） -->
+          <div id="session-list" class="hidden"></div>
         </div>
         <button id="btn-new" title="新建会话">＋</button>
-        <!-- ：✏️/🗑 紧贴成视觉组（直边相接、两端圆角），组内各自响应 hover，与 ＋ 之间留明显分隔 -->
-        <span id="btn-group" class="btn-group">
-          <button id="btn-rename" title="重命名当前会话">✏️</button>
-          <button id="btn-del" title="删除当前会话">🗑</button>
-        </span>
       </div>
       <button id="btn-settings" title="设置">⚙</button>
     </header>
@@ -57,7 +57,7 @@
     </footer>
   </div>
 
-  <!-- ：会话右键菜单：右键会话下拉弹出（fixed 浮层，视口内自动收拢），仅「重命名/删除」两项 -->
+  <!-- /：会话右键菜单：右键触发器（当前会话）或列表项（目标会话）弹出（fixed 浮层，视口内自动收拢），仅「重命名/删除」两项 -->
   <div id="ctx-menu" class="hidden">
     <button id="ctx-menu-rename">✏️ 重命名</button>
     <button id="ctx-menu-del" class="danger">🗑 删除</button>
@@ -98,6 +98,6 @@
     </div>
   </div>
 
-  <script src="/api/plugins/side-chat/assets/app.js?v=20"></script>
+  <script src="/api/plugins/side-chat/assets/app.js?v=21"></script>
 </body>
 </html>

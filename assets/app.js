@@ -97,25 +97,70 @@ function formatDiagnostics(d) {
 
 // ---------- 渲染 ----------
 
-function renderSessionSelect() {
-  const sel = $('session-select');
-  sel.innerHTML = '';
-  // 未绑定（旧数据）分组排后：正常在前、未绑定在后，组内保持原有 updatedAt 倒序
-  const ordered = [...state.sessions].sort((a, b) => Number(!!a.unbound) - Number(!!b.unbound));
+// ---------- 会话选择器（：自定义列表替代原生 select） ----------
+// 排序与旧 renderSessionSelect 一致：未绑定（旧数据）分组排后，组内保持 state.sessions 原序
+// （后端按 updatedAt 倒序返回）；排序用稳定 sort，同组相对顺序不变。
+function orderedSessions() {
+  return [...state.sessions].sort((a, b) => Number(!!a.unbound) - Number(!!b.unbound));
+}
+
+// 统一渲染：触发器标题（当前会话，含未绑定前缀；无会话显示占位）+ 列表内容（仅列表打开时重建）。
+// 列表打开期间轮询不调用本函数（见 pollStateOnce 注释），避免展开态被刷新打断。
+function renderSessionList() {
+  const cur = state.sessions.find((s) => s.id === state.currentId);
+  const label = cur ? (cur.unbound ? `（未绑定）${cur.title}` : cur.title) : '（暂无会话，点 ＋ 新建）';
+  $('session-trigger-label').textContent = label;
+  $('session-trigger').title = cur ? label : '选择会话';
+  if (!isSessionListOpen()) return;
+  const list = $('session-list');
+  list.innerHTML = '';
+  const ordered = orderedSessions();
+  if (!ordered.length) {
+    const empty = document.createElement('div');
+    empty.className = 'session-item empty';
+    empty.textContent = '（暂无会话，点 ＋ 新建）';
+    list.appendChild(empty);
+    return;
+  }
   for (const s of ordered) {
-    const opt = document.createElement('option');
-    opt.value = s.id;
-    opt.textContent = s.unbound ? `（未绑定）${s.title}` : s.title;
-    if (s.id === state.currentId) opt.selected = true;
-    sel.appendChild(opt);
+    const item = document.createElement('div');
+    item.className = 'session-item' + (s.id === state.currentId ? ' current' : '') + (s.unbound ? ' unbound' : '');
+    const t = document.createElement('span');
+    t.className = 'session-item-title';
+    t.textContent = s.unbound ? `（未绑定）${s.title}` : s.title;
+    item.appendChild(t);
+    item.dataset.id = s.id;
+    // 左键：切换会话 + 收起列表（菜单一并关闭，见 closeSessionList）
+    item.onclick = () => { closeSessionList(); openSession(s.id); };
+    // 右键：操作目标 = 该项会话 id（无需先选中），菜单在列表浮层之上显示（z-index 高于列表）
+    item.oncontextmenu = (e) => {
+      e.preventDefault();
+      closeCtxMenu(); // 再次右键：先关旧菜单
+      if (!canOpenCtxMenu(s.id)) return; // 编辑态不弹（列表此时已收起，防御性检查）
+      openCtxMenu(e.clientX, e.clientY, s.id);
+    };
+    list.appendChild(item);
   }
-  if (!state.sessions.length) {
-    const opt = document.createElement('option');
-    opt.value = '';
-    opt.textContent = '（暂无会话，点 ＋ 新建）';
-    sel.appendChild(opt);
-  }
-  updateRenameBtn(); // 列表重渲染时同步「重命名」按钮态（无会话时 disabled）
+}
+
+function isSessionListOpen() {
+  return !$('session-list').classList.contains('hidden');
+}
+
+function openSessionList() {
+  closeCtxMenu(); // 打开列表时同步关掉旧菜单（：列表收起/打开都与菜单互斥）
+  $('session-list').classList.remove('hidden');
+  renderSessionList(); // 展开后再渲染内容（renderSessionList 仅在展开态重建列表，反映最新数据）
+}
+
+function closeSessionList() {
+  $('session-list').classList.add('hidden');
+  closeCtxMenu(); // ：列表收起时同步关闭菜单
+}
+
+function toggleSessionList() {
+  if (isSessionListOpen()) closeSessionList();
+  else openSessionList();
 }
 
 // 统一刷新「新建会话」按钮态：
@@ -316,7 +361,7 @@ async function relocateMain() {
   const newPath = res.main?.sessionPath ?? null;
   if (!newPath || newPath === state.lastMainPath) return false; // 未发生切换
   // 主会话已切换：更新追踪路径后跑一轮正常轮询（id 序列对比 + renderBindHint），
-  // 列表过滤随新路径自动收敛，select 变化由轮询对比刷新
+  // 列表过滤随新路径自动收敛，触发器/列表变化由轮询对比刷新（列表打开时跳过重渲染）
   state.lastMainPath = newPath;
   await pollStateOnce();
   return true;
@@ -334,10 +379,12 @@ async function pollStateOnce() {
   const idSeq = (list) => (list ?? []).map((s) => `${s.id}:${s.unbound ? 'u' : 'b'}`).join(',');
   if (idSeq(res.sessions) !== idSeq(state.sessions)) {
     state.sessions = res.sessions;
-    renderSessionSelect();
+    // ：列表浮层打开期间不重渲染（避免展开态被打断/闪动），触发器标题不受影响；
+    // 关闭后下一次打开时由 openSessionList 重渲染，自然反映最新列表（取舍见 A5 简单方案）。
+    if (!isSessionListOpen()) renderSessionList();
     // 会话失配回退：列表刷新后当前选中会话可能已被隔离过滤/删除（主对话切换/隔离），
-    // select 会显示第一个 option 但 currentId 仍是旧值，后续发消息/删除会打到不可见会话。
-    // 自动回退到新列表第一个（空列表时 openSession(null) 走空态）。
+    // 触发器仍显示旧标题但 currentId 是旧值，后续发消息/删除会打到不可见会话。
+    // 自动回退到新列表第一个（空列表时 openSession(null) 走空态；openSession 会收起列表）。
     if (state.currentId && !state.sessions.some((s) => s.id === state.currentId)) {
       await openSession(state.sessions[0]?.id ?? null);
     }
@@ -355,7 +402,7 @@ async function loadState() {
   state.sessions = res.sessions ?? [];
   state.mainPath = res.main?.sessionPath ?? null;
   renderMainBar(res.main);
-  renderSessionSelect();
+  renderSessionList();
   fillSettings();
   renderProviders();
   updateNewBtn();
@@ -366,9 +413,9 @@ async function loadState() {
 let openSeq = 0;
 
 async function openSession(id) {
-  closeCtxMenu(); // ：会话切换（含轮询/删除/新建等一切路径）时关闭右键菜单
+  closeSessionList(); // ：会话切换（含轮询/删除/新建等一切路径）时收起列表并关闭右键菜单
   // 防御：列表刷新后 currentId 指向的会话可能已被隔离过滤/删除（主对话切换/隔离导致），
-  // select 会显示第一个 option 但 currentId 仍是旧值，后续发消息/删除会打到不可见会话。
+  // 触发器仍显示旧标题但 currentId 是旧值，后续发消息/删除会打到不可见会话。
   // 这里统一回退：id 不在列表且列表非空 → 打开第一个；列表为空 → 空态。
   // 其它调用路径不受影响：newSession/删除后打开的 id 一定刚写进列表，不会命中防御。
   if (id && !state.sessions.some((s) => s.id === id)) {
@@ -391,7 +438,7 @@ async function openSession(id) {
     return;
   }
   // 惰性归属：后端打开时可能刚把旧数据自动绑定到当前主会话，同步本地条目
-  // （去掉 unbound 标记、写入 boundMain，select 标题与提示条立即反映新状态）
+  // （去掉 unbound 标记、写入 boundMain，触发器/列表标题与提示条立即反映新状态）
   if (res.session?.boundMain) {
     const entry = state.sessions.find((s) => s.id === id);
     if (entry) {
@@ -411,7 +458,7 @@ async function openSession(id) {
       }
     }
   }
-  renderSessionSelect();
+  renderSessionList();
   updateNewBtn();
   renderBindHint();
 }
@@ -430,7 +477,7 @@ async function newSession() {
       return;
     }
     state.sessions = [res.session, ...state.sessions];
-    renderSessionSelect();
+    renderSessionList();
     await openSession(res.session.id);
   } finally {
     state.creating = false;
@@ -438,34 +485,43 @@ async function newSession() {
   }
 }
 
-async function delSession() {
+// ：两态删除的 armed 状态按目标会话 id 独立存储（不同目标互不干扰）。
+// 顶栏 🗑 已移除，入口统一走右键菜单（菜单项文本由 renderCtxMenuDel 同步）。
+const delArmed = new Map(); // 目标会话 id -> 3 秒复原定时器句柄
+
+// 进入确认态：3 秒内再点同一目标才执行删除；超时自动复原
+function armDel(id) {
+  disarmDel(id); // 防重复 arm（同一目标连点只保留一个计时窗口）
+  const t = setTimeout(() => disarmDel(id), 3000);
+  delArmed.set(id, t);
+  renderCtxMenuDel(); // 菜单打开且目标为该 id 时，菜单项变「确认删除？」
+}
+
+// 退出确认态：清计时器与标记，同步复原菜单项显示（目标匹配时）
+function disarmDel(id) {
+  const t = delArmed.get(id);
+  if (t) { clearTimeout(t); delArmed.delete(id); }
+  renderCtxMenuDel();
+}
+
+async function delSession(id) {
   if (state.deleting) return; // 删除请求进行中防重入（重复点击会发二次请求）
-  const id = state.currentId;
-  if (!id) {
+  const targetId = id ?? state.currentId; // 无参 → 当前会话；有参 → 目标会话
+  if (!targetId || !state.sessions.some((s) => s.id === targetId)) {
     addMsg('sys', '没有可删除的会话');
     return;
   }
-  const btn = $('btn-del');
   // 两态确认：iframe 环境里 window.confirm 会被 host 静默禁用（点删除没反应），
-  // 改用「第一次点击变确认态，3 秒内再点才执行」的内联确认。
-  if (!btn.dataset.arming) {
-    btn.dataset.arming = '1';
-    btn.textContent = '确认？';
-    btn.title = '再次点击确认删除';
-    setTimeout(() => {
-      delete btn.dataset.arming;
-      btn.textContent = '🗑';
-      btn.title = '删除当前会话';
-    }, 3000);
-    return;
+  // 改用「第一次点击变确认态，3 秒内再点才执行」的内联确认（armed 按目标 id 独立计时）。
+  if (!delArmed.has(targetId)) {
+    armDel(targetId);
+    return; // 菜单路径：菜单保持打开，项文本变「确认删除？」（renderCtxMenuDel 同步）
   }
-  delete btn.dataset.arming;
-  btn.textContent = '🗑';
-  btn.title = '删除当前会话';
+  disarmDel(targetId);
   state.deleting = true;
   let res;
   try {
-    res = await api(`/api/sessions/${encodeURIComponent(id)}/delete`, { method: 'POST', body: JSON.stringify({}) });
+    res = await api(`/api/sessions/${encodeURIComponent(targetId)}/delete`, { method: 'POST', body: JSON.stringify({}) });
   } finally {
     state.deleting = false;
   }
@@ -473,34 +529,35 @@ async function delSession() {
     addMsg('sys', res.error ?? '删除失败');
     return;
   }
-  state.sessions = state.sessions.filter((s) => s.id !== id);
-  if (state.sessions.length) {
-    // 还有会话：自动打开列表第一个
-    await openSession(state.sessions[0].id);
+  state.sessions = state.sessions.filter((s) => s.id !== targetId);
+  if (targetId === state.currentId) {
+    // 删除的是当前会话：走现有切换/空态逻辑（openSession 内部会收列表）
+    if (state.sessions.length) {
+      await openSession(state.sessions[0].id);
+    } else {
+      state.currentId = null;
+      state.currentHasMessages = false;
+      $('messages').innerHTML = '';
+      renderSessionList();
+      updateNewBtn();
+    }
   } else {
-    // 一个不剩：回到可建第一个的空态
-    state.currentId = null;
-    state.currentHasMessages = false;
-    $('messages').innerHTML = '';
-    renderSessionSelect();
-    updateNewBtn();
+    // 删除的不是当前会话：只从列表移除，不切换当前会话
+    renderSessionList();
   }
+  // 删除成功：菜单关闭并收起列表（openSession 路径已收，此处幂等兜底）
+  closeCtxMenu();
+  closeSessionList();
 }
 
-// ---------- 会话重命名（） ----------
-// 编辑态：rename-bar 替换 select（select 隐藏即不可交互），新建/删除/重命名按钮禁用，
+// ---------- 会话重命名（ / ） ----------
+// 编辑态：rename-bar 替换触发器（触发器隐藏即不可交互），列表收起，新建按钮禁用，
 // 防止切换会话导致保存到错误 id。Enter 保存 / Esc 取消 / 按钮双支持；
 // 失焦无改动退出不保存，有改动保留编辑态（防误触丢输入）。
 // iframe 环境 confirm/prompt 均被禁用，错误用编辑条内红字提示（3 秒自动消失）。
 let renameSessionId = null;  // 进入编辑态时的会话 id（编辑期间 currentId 可能被轮询改写，保存用此快照）
 let renameOriginal = '';     // 进入编辑态时的原标题（失焦「无改动」判定基准）
 let renameErrorTimer = null; // 红字错误提示自动消失定时器
-
-// 重命名按钮态：无当前会话或编辑态中时 disabled；列表每次重渲染时由 renderSessionSelect 同步
-function updateRenameBtn() {
-  const has = !!state.currentId && state.sessions.some((s) => s.id === state.currentId);
-  $('btn-rename').disabled = renameSessionId !== null || !has;
-}
 
 function showRenameError(msg) {
   const err = $('rename-error');
@@ -510,28 +567,27 @@ function showRenameError(msg) {
   renameErrorTimer = setTimeout(() => err.classList.add('hidden'), 3000);
 }
 
-function startRename() {
-  const entry = state.sessions.find((s) => s.id === state.currentId);
+// ：操作目标泛化。无参 → 当前会话（触发器/菜单默认）；有参 → 目标会话（列表项右键）。
+// 编辑对象可以是「当前会话」或「右键目标会话」，编辑条预填目标标题，保存后目标条目 title 更新
+// （目标非当前会话时只更新其 title，不切换当前会话）。
+function startRename(id) {
+  const targetId = id ?? state.currentId;
+  const entry = state.sessions.find((s) => s.id === targetId);
   if (!entry) return;
   renameSessionId = entry.id;
   renameOriginal = entry.title;
   const input = $('rename-input');
   input.value = entry.title;
   $('rename-error').classList.add('hidden');
-  // 编辑态切换：select 隐藏（不可交互，等效禁用），编辑条占据其位置
-  $('session-select').classList.add('hidden');
+  // 编辑态切换：触发器隐藏（不可交互，等效禁用），列表收起，编辑条占据其位置
+  closeCtxMenu();
+  closeSessionList();
+  $('session-trigger').classList.add('hidden');
   $('rename-bar').classList.remove('hidden');
-  // 清理删除按钮的两态确认残留（编辑态中该按钮被禁用，恢复时不能停留在「确认？」）
-  const del = $('btn-del');
-  if (del.dataset.arming) {
-    delete del.dataset.arming;
-    del.textContent = '🗑';
-    del.title = '删除当前会话';
-  }
+  // 清理该目标的两态确认残留（进入编辑态后菜单不可达，不能停留在「确认删除？」计时中）
+  disarmDel(entry.id);
   // 编辑态锁：防切换会话导致保存到错误 id
   $('btn-new').disabled = true;
-  $('btn-del').disabled = true;
-  $('btn-rename').disabled = true;
   input.focus();
   input.setSelectionRange(input.value.length, input.value.length); // 光标置末尾，避免误覆盖原标题
 }
@@ -539,12 +595,10 @@ function startRename() {
 function exitRename() {
   renameSessionId = null;
   $('rename-bar').classList.add('hidden');
-  $('session-select').classList.remove('hidden');
+  $('session-trigger').classList.remove('hidden');
   $('rename-error').classList.add('hidden');
   if (renameErrorTimer) { clearTimeout(renameErrorTimer); renameErrorTimer = null; }
-  updateNewBtn();    // 恢复新建按钮态（空会话/无消息时保持置灰）
-  updateRenameBtn(); // 恢复重命名按钮态（无会话时 disabled）
-  $('btn-del').disabled = false;
+  updateNewBtn(); // 恢复新建按钮态（空会话/无消息时保持置灰）
 }
 
 async function saveRename() {
@@ -564,7 +618,7 @@ async function saveRename() {
     return;
   }
   entry.title = res.title ?? title; // 以服务端返回为准（trim 后）
-  renderSessionSelect();            // 重渲染并保持选中（currentId 未变）；列表位置不变（不重排序）
+  renderSessionList();              // 重渲染：目标为当前会话则触发器/列表同步新标题；非当前会话只更新其条目
   exitRename();
 }
 
@@ -788,23 +842,27 @@ function showRoundList() {
 
 // ---------- 事件绑定 ----------
 
-// ---------- 会话右键菜单（） ----------
-// 右键会话下拉弹出「重命名/删除」两项，复用现有 startRename / delSession（删除与顶栏 🗑 共享两态确认状态）。
-// 无当前会话或重命名编辑态不弹；点击菜单外 / Esc / 会话切换 / 再次右键 → 关闭。
+// ---------- 会话右键菜单（ / ） ----------
+// 右键触发器（目标=当前会话）或列表项（目标=该项会话 id，无需先选中）弹出「重命名/删除」两项。
+// 操作目标快照存 ctxMenuTargetId；菜单内两态删除：点「🗑 删除」菜单不关闭、原地变「确认删除？」，
+// 3 秒内再点真删，超时自动复原；菜单每次打开时重置删除项（不带历史 armed 显示残留）。
+// 无会话 / 重命名编辑态不弹；点击菜单外 / Esc / 会话切换 / 再次右键 / 列表收起 → 关闭。
 const ctxMenu = $('ctx-menu');
 const ctxMenuDel = $('ctx-menu-del');
+let ctxMenuTargetId = null; // 菜单当前操作目标会话 id（打开时快照，关闭时清空）
 
-// 可弹出条件：非编辑态且有有效当前会话（与 updateRenameBtn 的 has 判定口径一致）
-function canOpenCtxMenu() {
+// 可弹出条件：非编辑态且目标 id 在会话列表中有效（无会话时触发器右键不弹）
+function canOpenCtxMenu(targetId) {
   if (renameSessionId !== null) return false; // 编辑态锁
-  return !!state.currentId && state.sessions.some((s) => s.id === state.currentId);
+  return targetId != null && state.sessions.some((s) => s.id === targetId);
 }
 
-function openCtxMenu(x, y) {
-  // 删除项与顶栏 🗑 共享 dataset.arming：按钮处于 3 秒确认窗口内时菜单项同步显示「确认删除？」
-  const armed = !!$('btn-del').dataset.arming;
-  ctxMenuDel.textContent = armed ? '确认删除？' : '🗑 删除';
-  ctxMenuDel.classList.toggle('armed', armed);
+function openCtxMenu(x, y, targetId) {
+  ctxMenuTargetId = targetId;
+  // 菜单每次打开重置删除项为「🗑 删除」：不带历史 armed 显示残留
+  // （若该目标仍处于 3 秒确认窗口内，再点删除会直接执行，见 delSession）
+  ctxMenuDel.textContent = '🗑 删除';
+  ctxMenuDel.classList.remove('armed');
   ctxMenu.classList.remove('hidden');
   // 先显示再量尺寸：超出视口（面板）时自动收拢进可视区，四周留 4px 边距
   ctxMenu.style.left = Math.max(4, Math.min(x, window.innerWidth - ctxMenu.offsetWidth - 4)) + 'px';
@@ -813,37 +871,59 @@ function openCtxMenu(x, y) {
 
 function closeCtxMenu() {
   ctxMenu.classList.add('hidden');
+  ctxMenuTargetId = null;
 }
 
-// 右键会话下拉（select 及其内部）弹菜单；右键 ＋/✏️/🗑/⚙ 等按钮不弹
-$('session-picker').addEventListener('contextmenu', (e) => {
-  const sel = $('session-select');
-  if (e.target !== sel && !sel.contains(e.target)) return;
+// 菜单删除项显示与目标 id 的 armed 状态同步（armDel/disarmDel 调用；菜单关闭时无效果）
+function renderCtxMenuDel() {
+  if (ctxMenuTargetId == null) return;
+  const armed = delArmed.has(ctxMenuTargetId);
+  ctxMenuDel.textContent = armed ? '确认删除？' : '🗑 删除';
+  ctxMenuDel.classList.toggle('armed', armed);
+}
+
+// 右键触发器：目标=当前会话；无会话 / 编辑态不弹
+$('session-trigger').addEventListener('contextmenu', (e) => {
   e.preventDefault();               // 防浏览器原生菜单
   closeCtxMenu();                   // 再次右键：先关旧菜单
-  if (!canOpenCtxMenu()) return;    // 无会话 / 编辑态：不弹
-  openCtxMenu(e.clientX, e.clientY);
+  if (!canOpenCtxMenu(state.currentId)) return; // 无会话 / 编辑态：不弹
+  openCtxMenu(e.clientX, e.clientY, state.currentId);
 });
 // 菜单打开期间：任何位置的右键都拦截原生菜单（捕获阶段先于上面冒泡处理器执行）
 document.addEventListener('contextmenu', (e) => {
   if (!ctxMenu.classList.contains('hidden')) e.preventDefault();
 }, true);
-// 点击菜单外关闭；菜单项点击命中 contains 跳过，由项自身 onclick 关闭
+// 点击菜单外关闭菜单；点击列表外（触发器/列表/菜单之外）收起列表
 document.addEventListener('click', (e) => {
   if (!ctxMenu.classList.contains('hidden') && !ctxMenu.contains(e.target)) closeCtxMenu();
+  const list = $('session-list');
+  if (!list.classList.contains('hidden') &&
+      !list.contains(e.target) &&
+      e.target !== $('session-trigger') &&
+      !ctxMenu.contains(e.target)) {
+    closeSessionList();
+  }
 });
-// Esc 关闭（编辑态中菜单不弹，与 rename-input 的 Esc 退出编辑互不干扰）
+// Esc：关闭菜单 + 收起列表（编辑态中菜单/列表均不出现，与 rename-input 的 Esc 退出编辑互不干扰）
 document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape') closeCtxMenu();
+  if (e.key === 'Escape') { closeCtxMenu(); closeSessionList(); }
 });
-$('ctx-menu-rename').onclick = () => { closeCtxMenu(); startRename(); };
-$('ctx-menu-del').onclick = () => { closeCtxMenu(); delSession(); }; // 两态确认：首次点击只 arm 顶栏按钮，3 秒内再点才执行
+// 重命名：关闭菜单 + 收起列表 + 对目标 id 进入编辑态
+$('ctx-menu-rename').onclick = () => {
+  const id = ctxMenuTargetId;
+  closeCtxMenu();
+  closeSessionList();
+  startRename(id); // 菜单弹出时已校验目标有效，startRename 内部再防御
+};
+// 删除：菜单不关闭、保持原地，两态确认在菜单项内进行（首次点击 arm，3 秒内再点真删）
+$('ctx-menu-del').onclick = () => {
+  if (ctxMenuTargetId == null) return;
+  delSession(ctxMenuTargetId);
+};
 
+$('session-trigger').onclick = toggleSessionList;
 $('btn-new').onclick = newSession;
-$('btn-del').onclick = delSession;
 $('btn-send').onclick = send;
-$('session-select').onchange = (e) => { closeCtxMenu(); openSession(e.target.value); }; // ：会话切换关菜单
-$('btn-rename').onclick = startRename;
 $('btn-rename-ok').onclick = saveRename;
 $('btn-rename-cancel').onclick = exitRename;
 $('rename-input').addEventListener('keydown', (e) => {
