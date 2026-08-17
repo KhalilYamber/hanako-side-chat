@@ -21,6 +21,7 @@ const TESTS = [
   { name: 'model-adapter-test', file: 'debug/model-adapter-test.mjs', args: [], required: true, desc: 'ModelAdapter 单测（SSE/URL 规整/错误分类）' },
   { name: 'provider-store-test', file: 'debug/provider-store-test.mjs', args: [], required: true, desc: 'ProviderStore 单测（模板/脱敏/默认解析）' },
   { name: 'profile-provider-test', file: 'debug/profile-provider-test.mjs', args: [], required: true, desc: 'ProfileProvider 单测（bus/文件降级）' },
+  { name: 'chat-pipeline-test', file: 'debug/chat-pipeline-test.mjs', args: [], required: true, desc: 'ChatPipeline 单测（三层组装/历史转换/JSONL 回环）' },
   { name: 'smoke-test', file: 'debug/smoke-test.cjs', args: [], required: true, desc: '语法/补丁自测/索引/容器联动冒烟' },
   { name: 'check-host-patch', file: 'debug/check-host-patch.js', args: ['--selftest'], required: true, desc: 'host 补丁检测逻辑自测（内存样本）' },
   { name: 'check-renderer-patch', file: 'debug/check-renderer-patch.js', args: ['--selftest'], required: true, desc: 'renderer 补丁检测逻辑自测（内存样本）' },

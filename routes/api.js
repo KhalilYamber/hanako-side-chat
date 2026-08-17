@@ -30,6 +30,10 @@ let _modelAdapter = null;
 async function loadModelAdapter() {
   return _modelAdapter ??= import(`../lib/model-adapter.js?t=${Date.now()}`);
 }
+let _pipeline = null;
+async function loadPipeline() {
+  return _pipeline ??= import(`../lib/chat-pipeline.js?t=${Date.now()}`);
+}
 
 // 默认「自我意识」提示词：辅助对话的身份定位。
 // 用户可在设置面板编辑（配置字段 selfPrompt），发送时作为附加 system 块注入，
@@ -360,6 +364,73 @@ export default function registerSideChatRoutes(app, ctx) {
     const mainInfo = await syncMainContext(pctx, c, entry, cfg);
     const reference = mainInfo.reference;
     const mainStats = mainInfo.stats;
+
+    // 【里程碑 3】直连分支：resolveDefault 有可用 provider+model 时，绕过 host 官方管道，
+    // 组装三层消息（system 人格+边界 / history 辅助历史 / user 参考块+提问）直连
+    // OpenAI 兼容 API，回复落盘回辅助会话 JSONL（前端现有轮询机制读同一文件即见）。
+    // 无可用 provider 时回落 host 管道（下方原逻辑逐字保留，行为与之前完全一致）。
+    const resolved = await (await loadProviderStore()).resolveDefault(pctx);
+    if (resolved?.provider && resolved?.model) {
+      // 内存级 busy 防并发（直连模式无 host session_busy 兜底，见 getDirectBusy 注释）
+      const busy = getDirectBusy();
+      if (busy?.has(id)) return c.json({ ok: false, error: '正在回复上一条消息，请稍候再发' });
+      busy?.set(id, Date.now());
+      try {
+        const pipeline = await loadPipeline();
+        // ① 人格：直连必须显式注入（host 管道时代由官方自动注入）；agentId 归属优先
+        const agentId = entry.agentId || requestAgentId(c);
+        const personality = await pipeline.buildPersonality(pctx, agentId);
+        // ② system：selfPrompt（可空）+ boundary（人格与边界同层，参考上下文绝不混入）
+        const systemText = pipeline.buildSystemText(cfg);
+        // ③ 辅助会话自身历史：host 管道自动注入，直连必须自己读（parseSessionJsonl 文件直读）
+        let rounds = [];
+        try {
+          rounds = (await loadAdapter()).parseSessionJsonl(entry.sessionPath);
+        } catch {
+          rounds = [];
+        }
+        const history = pipeline.roundsToHistory(rounds, cfg.includeThinking);
+        // ④ 三层组装：system（主对话人格+边界）→ history（辅助记忆）→ user（参考块前置）
+        const messages = pipeline.buildMessages({ personality, systemText, reference, history, userText: text });
+        // ⑤ 直连发送（OpenAI 兼容协议，模型级参数透传）
+        const res = await (await loadModelAdapter()).streamChat({
+          baseUrl: resolved.provider.baseUrl,
+          apiKey: resolved.provider.apiKey,
+          model: resolved.model.id,
+          messages,
+          params: resolved.model.params,
+        });
+        if (!res.ok) {
+          // 失败：user 行照写（保持历史连续：模型下次能看到这条提问），assistant 行不写。
+          // 前端轮询读到「无回复的 user 行」= 发送了但未成功，语义与 host 管道一致。
+          try {
+            await pipeline.appendSessionMessages(entry.sessionPath, [{ role: 'user', content: text }]);
+          } catch {
+            // 落盘失败不掩盖主错误（结构化错误已足够）
+          }
+          return c.json({
+            ok: false,
+            direct: true,
+            kind: res.error?.kind ?? 'unknown',
+            error: res.error?.message ?? '直连发送失败',
+          });
+        }
+        // ⑥ 成功：先 user 行再 assistant 行（reasoning 进 thinking 块），落盘回辅助会话
+        const appendRes = await pipeline.appendSessionMessages(entry.sessionPath, [
+          { role: 'user', content: text },
+          { role: 'assistant', content: res.content ?? '', thinking: res.reasoning ?? '' },
+        ]);
+        if (!appendRes.ok) {
+          // 回复已生成但落盘失败：不返回 ok（前端不进入轮询、提示错误）。用户重发会再次
+          // 调用模型（低频场景，可接受；user 行可能已写，重发后历史里可见重复提问）。
+          return c.json({ ok: false, direct: true, error: `回复已生成但落盘失败：${appendRes.error ?? '未知错误'}` });
+        }
+        (await loadStore()).upsertSession(pctx.dataDir, { id, updatedAt: Date.now() });
+        return c.json({ ok: true, direct: true, mainStats, model: resolved.model.id });
+      } finally {
+        busy?.delete(id);
+      }
+    }
 
     // 2. 人格跟随：会话绑定主对话 agent，官方管道自动注入其完整人格，
     //    这里只注入边界声明与「自我意识」提示词（用户可编辑，见设置面板）。
@@ -992,6 +1063,17 @@ function getStateCache() {
   if (!globalThis.__sideChat || typeof globalThis.__sideChat !== 'object') return null;
   if (!globalThis.__sideChat.stateCache) globalThis.__sideChat.stateCache = new Map();
   return globalThis.__sideChat.stateCache;
+}
+
+// 直连模式的内存级 busy 标记（里程碑 3）：host 管道靠官方 session_busy 拒绝并发，
+// 直连模式自持会话文件（appendFileSync 只防行交错，防不了两个请求各写一轮的语义错乱），
+// 故给会话加内存 busy 锁：命中返回与 host 管道一致的「正在回复上一条消息」文案。
+// 挂在 globalThis.__sideChat 单例（与 stateCache 同容器）；单例不可用时返回 null
+// （退化不防并发，与 getStateCache 同策略，可接受）。
+function getDirectBusy() {
+  if (!globalThis.__sideChat || typeof globalThis.__sideChat !== 'object') return null;
+  if (!globalThis.__sideChat.directBusy) globalThis.__sideChat.directBusy = new Map();
+  return globalThis.__sideChat.directBusy;
 }
 
 // 主会话信息（状态接口）：优先官方 history API，兜底 JSONL；带 10 秒短 TTL 缓存。
