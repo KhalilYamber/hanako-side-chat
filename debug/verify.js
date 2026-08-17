@@ -8,7 +8,7 @@
 //     5. 从会话 jsonl 确认实际绑定模型（model_change）
 //     6. 从 usage-ledger.json 确认用量归因
 //   debug/smoke-test.cjs：静态回归（CLI 独立运行，node debug/smoke-test.cjs [--json]）：
-//     ① 语法校验（8 文件）② 补丁检测自测 ③ 索引完整性 ④ Docker 联动（可选）
+//     ① 语法校验（14 文件）② 补丁检测自测 ③ 索引完整性 ④ Docker 联动（可选）
 //   两者互补无重叠：本工具执行时顺带以子进程调 smoke-test（--json 输出并入结果），
 //   smoke-test 失败仅记入步骤，不阻断真实链路验证。
 

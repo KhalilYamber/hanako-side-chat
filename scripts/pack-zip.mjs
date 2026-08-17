@@ -14,7 +14,16 @@ import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
 const DIST = path.join(ROOT, 'dist');
-const EXCLUDE = new Set(['.gitignore', '.dockerignore']);
+// 红队 P2-16：Release 包只分发运行时文件——debug/ 调试工具（verify/probe/test-bus 等）
+// 与 scripts/ 打包脚本不随包分发；docs/ 属于仓库文档，保留随包（README 惯例）。
+const EXCLUDE = new Set([
+  '.gitignore',
+  '.dockerignore',
+  'Dockerfile',
+  'debug',
+  'scripts',
+  '.github',
+]);
 
 // ---------- CRC32（ZIP 标准多项式） ----------
 const CRC_TABLE = (() => {
@@ -123,10 +132,28 @@ function collectManifest() {
   return (tracked + '\n' + untracked)
     .split('\n')
     .map((s) => s.trim())
-    .filter((s) => s && !EXCLUDE.has(s) && !seen.has(s) && (seen.add(s), true));
+    // EXCLUDE 按顶层目录/文件名匹配（.github/workflows/x.yml 的顶层是 .github）
+    .filter((s) => s && !EXCLUDE.has(s.split('/')[0]) && !seen.has(s) && (seen.add(s), true));
+}
+
+// 红队 P2-17：已跟踪文件存在未提交改动时以工作区内容进包，
+// 导致 Release 产物与版本历史不一致（打过 tag 后改一行再打包，包内是改动后内容）。
+// 发布前置校验：工作区必须干净（未跟踪未忽略文件除外——新模块场景由上面双保险覆盖）。
+function assertCleanWorkingTree() {
+  let diff;
+  try {
+    diff = execFileSync('git', ['diff', '--name-only'], { cwd: ROOT, encoding: 'utf8' });
+  } catch (e) {
+    throw new Error(`git diff 失败（需在 git 仓库内运行）：${e.message}`);
+  }
+  const dirty = diff.split('\n').map((s) => s.trim()).filter(Boolean);
+  if (dirty.length) {
+    throw new Error(`工作区存在未提交改动（${dirty.length} 个文件），先 commit 再打包：${dirty.slice(0, 5).join('、')}${dirty.length > 5 ? ` 等 ${dirty.length} 个` : ''}`);
+  }
 }
 
 function main() {
+  assertCleanWorkingTree();
   const version = readManifestVersion();
   const names = collectManifest();
   const entries = [];

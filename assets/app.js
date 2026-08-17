@@ -1069,9 +1069,16 @@ function providerCard(p) {
     }
     result.textContent = '测试中…';
     result.className = 'provider-test-result';
+    // 红队 P2-22：重入锁——测试中禁用按钮，防并发外呼（同一卡片可连点）
+    testBtn.disabled = true;
     const body = { baseUrl, providerId: p.id };
     if (keyInput.value.trim()) body.apiKey = keyInput.value.trim();
-    const res = await api('/api/providers/test', { method: 'POST', body: JSON.stringify(body) });
+    let res;
+    try {
+      res = await api('/api/providers/test', { method: 'POST', body: JSON.stringify(body) });
+    } finally {
+      testBtn.disabled = false;
+    }
     if (res.ok) {
       // 拉取到的真实模型列表自动并入模型输入框（去重，保留用户自填项），
       // 保存后模型切换下拉即可用全部模型（模板写死列表的局限由此解除）
