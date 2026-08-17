@@ -28,7 +28,7 @@ const SESSION_PATH = URL_PARAMS.get('sessionPath') || '';
 // 当前两侧逻辑与外观一致，仅预留扩展位。
 const SURFACE = document.documentElement.dataset.surface || 'widget';
 
-let state = { sessions: [], config: null, currentId: null, busy: false, creating: false, deleting: false, currentHasMessages: false, lastMainPath: null, mainPath: null };
+let state = { sessions: [], config: null, currentId: null, busy: false, creating: false, deleting: false, currentHasMessages: false, lastMainPath: null, mainPath: null, providers: [], defaultProviderId: '', defaultModel: '' };
 let timer = null;
 
 // 输入框引导文案：空白态（无会话）提示自动创建，有会话恢复原文案
@@ -850,52 +850,416 @@ function showSettingsError(msg) {
   showSettingsError._t = setTimeout(() => err.classList.add('hidden'), 3000);
 }
 
+// ---------- 模型供应商（独立配置，直连 API 架构，v32） ----------
+
+// 拉取供应商配置（脱敏）并刷新设置面板区块 + 模型切换下拉。
+// 不 await：loadState 路径 fire-and-forget，失败只留空态不阻塞主流程。
 async function renderProviders() {
-  const area = $('provider-area');
-  area.innerHTML = '';
-  const ready = await api('/api/providers/ready');
-  const imported = ready.imported ?? {};
-  if (!Object.keys(imported).length) {
-    const meta = await api('/api/providers');
-    if (meta.ok && Object.keys(meta.providers).length) {
-      const btn = document.createElement('button');
-      btn.textContent = `从主设置一键导入供应商（${Object.keys(meta.providers).length} 个可用）`;
-      btn.onclick = async () => {
-        const r = await api('/api/providers/import', { method: 'POST', body: JSON.stringify({}) });
-        if (r.ok) renderProviders();
-      };
-      area.appendChild(btn);
-    } else {
-      area.textContent = '未发现可导入的供应商。';
-    }
+  const res = await api('/api/providers');
+  if (res.ok) {
+    state.providers = res.providers ?? [];
+    state.defaultProviderId = res.defaultProviderId ?? '';
+    state.defaultModel = res.defaultModel ?? '';
+  }
+  renderProviderArea();
+  renderModelSelect();
+}
+
+// 发消息框旁模型切换下拉：当前默认供应商的模型列表，切换即保存（立即生效）
+function renderModelSelect() {
+  const sel = $('model-select');
+  sel.innerHTML = '';
+  const provider = state.providers.find((p) => p.id === state.defaultProviderId && p.enabled) ?? null;
+  const models = provider ? (provider.models ?? []) : [];
+  if (!models.length) {
+    const opt = document.createElement('option');
+    opt.value = '';
+    opt.textContent = provider ? '（该供应商暂无模型，请到设置添加）' : '（未配置模型，请到设置）';
+    sel.appendChild(opt);
+    sel.disabled = true;
     return;
   }
-  for (const [pid, p] of Object.entries(imported)) {
-    const item = document.createElement('div');
-    item.className = 'provider-item';
-    const h = document.createElement('h5');
-    h.textContent = pid;
-    item.appendChild(h);
-    const models = p.models ?? [];
-    if (models.length) {
-      const sel = document.createElement('select');
-      for (const m of models) {
-        const opt = document.createElement('option');
-        opt.value = m;
-        opt.textContent = m;
-        sel.appendChild(opt);
-      }
-      item.appendChild(sel);
-      const save = document.createElement('button');
-      save.textContent = '设为辅助对话模型';
-      save.onclick = async () => {
-        await api('/api/settings', { method: 'POST', body: JSON.stringify({ model: `${pid}/${sel.value}` }) });
-        save.textContent = '已设置 ✓';
-      };
-      item.appendChild(save);
-    }
-    area.appendChild(item);
+  sel.disabled = false;
+  let found = false;
+  for (const m of models) {
+    const opt = document.createElement('option');
+    opt.value = m.id;
+    opt.textContent = m.name || m.id;
+    if (m.id === state.defaultModel) { opt.selected = true; found = true; }
+    sel.appendChild(opt);
   }
+  if (!found) {
+    // 默认模型不在当前列表（如刚切换默认供应商）：选中第一个并同步本地状态
+    sel.selectedIndex = 0;
+    state.defaultModel = models[0].id;
+  }
+}
+
+// 保存默认供应商/模型（POST 轻量接口，模型切换下拉与设置面板默认选择共用）
+async function saveDefault(providerId, modelId) {
+  const res = await api('/api/providers/default', {
+    method: 'POST',
+    body: JSON.stringify({ defaultProviderId: providerId, defaultModel: modelId }),
+  });
+  if (res.ok) {
+    state.defaultProviderId = providerId;
+    state.defaultModel = modelId;
+    return true;
+  }
+  addMsg('sys', res.error ?? '默认选择保存失败');
+  return false;
+}
+
+// 整体保存 providers（PUT）：脱敏数据去掉 apiKey/hasKey 字段再提交，
+// 后端对「缺省 apiKey 字段」的条目保留原密钥（详见 provider-store.saveProviders）
+function stripForPut(p) {
+  const { hasKey, apiKey, ...rest } = p;
+  return rest;
+}
+
+// 模型列表文本 ⇄ 数组：每行一个模型 id，可带「|显示名」
+function parseModels(text) {
+  return String(text ?? '').split('\n').map((s) => s.trim()).filter(Boolean).map((line) => {
+    const i = line.indexOf('|');
+    const id = (i > 0 ? line.slice(0, i) : line).trim();
+    const name = (i > 0 ? line.slice(i + 1) : line).trim();
+    return { id, name: name || id, params: {} };
+  });
+}
+
+// 自定义供应商 id 生成（字符集符合后端 [A-Za-z0-9_-] 校验）
+function genProviderId() {
+  return `custom-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+}
+
+// 设置面板：供应商管理区（列表卡片 + 编辑表单 + 测试连接 + 默认选择 + 添加）
+function renderProviderArea() {
+  const area = $('provider-area');
+  area.innerHTML = '';
+  area.appendChild(renderDefaultRow());
+  if (!state.providers.length) {
+    const empty = document.createElement('p');
+    empty.className = 'provider-empty';
+    empty.textContent = '尚未配置供应商。可从下方预置模板添加，或「从主设置一键导入」。';
+    area.appendChild(empty);
+  }
+  for (const p of state.providers) area.appendChild(providerCard(p));
+  area.appendChild(renderAddRow());
+}
+
+// 默认供应商/模型选择行
+function renderDefaultRow() {
+  const row = document.createElement('div');
+  row.className = 'provider-defaults';
+  const lbl = document.createElement('span');
+  lbl.textContent = '默认供应商/模型：';
+  const ps = document.createElement('select');
+  ps.id = 'set-default-provider';
+  const autoOpt = document.createElement('option');
+  autoOpt.value = '';
+  autoOpt.textContent = '（自动：第一个可用）';
+  ps.appendChild(autoOpt);
+  for (const p of state.providers) {
+    if (!p.enabled) continue;
+    const opt = document.createElement('option');
+    opt.value = p.id;
+    opt.textContent = p.name || p.id;
+    if (p.id === state.defaultProviderId) opt.selected = true;
+    ps.appendChild(opt);
+  }
+  const ms = document.createElement('select');
+  ms.id = 'set-default-model';
+  const persist = () => saveDefault(ps.value, ms.value);
+  ps.onchange = () => { fillDefaultModel(ps, ms); persist(); };
+  ms.onchange = persist;
+  fillDefaultModel(ps, ms);
+  row.appendChild(lbl);
+  row.appendChild(ps);
+  row.appendChild(ms);
+  return row;
+}
+
+// 填充默认模型下拉（跟随所选供应商的模型列表）
+function fillDefaultModel(ps, ms) {
+  const pid = ps.value;
+  const p = state.providers.find((x) => x.id === pid);
+  const models = p?.enabled ? (p.models ?? []) : [];
+  ms.innerHTML = '';
+  if (!models.length) {
+    const opt = document.createElement('option');
+    opt.value = '';
+    opt.textContent = '（无模型）';
+    ms.appendChild(opt);
+    ms.disabled = true;
+    return;
+  }
+  ms.disabled = false;
+  let found = false;
+  for (const m of models) {
+    const opt = document.createElement('option');
+    opt.value = m.id;
+    opt.textContent = m.name || m.id;
+    if (pid === state.defaultProviderId && m.id === state.defaultModel) { opt.selected = true; found = true; }
+    ms.appendChild(opt);
+  }
+  if (!found) ms.selectedIndex = 0;
+}
+
+// 单个供应商卡片：名称 / Base URL / API 密钥（密码遮罩）/ 模型列表 / 测试连接 / 保存 / 删除
+function providerCard(p) {
+  const card = document.createElement('div');
+  card.className = 'provider-item';
+
+  const head = document.createElement('div');
+  head.className = 'provider-head';
+  const nameInput = document.createElement('input');
+  nameInput.className = 'provider-name';
+  nameInput.value = p.name;
+  nameInput.placeholder = '供应商名称';
+  head.appendChild(nameInput);
+  if (p.builtin) {
+    const tag = document.createElement('span');
+    tag.className = 'provider-tag';
+    tag.textContent = '模板';
+    head.appendChild(tag);
+  }
+  const delBtn = document.createElement('button');
+  delBtn.className = 'provider-del';
+  delBtn.textContent = '删除';
+  head.appendChild(delBtn);
+  card.appendChild(head);
+
+  const urlInput = field(card, 'Base URL', p.baseUrl, 'https://api.example.com/v1');
+  const keyInput = field(card, 'API 密钥（仅存本机）', '', p.hasKey ? '密钥已保存，留空保持不变' : 'sk-…（可选）');
+  keyInput.type = 'password';
+
+  const ml = document.createElement('label');
+  const mlText = document.createElement('span');
+  mlText.textContent = '模型列表（每行一个，可带 |显示名）';
+  ml.appendChild(mlText);
+  const modelsInput = document.createElement('textarea');
+  modelsInput.className = 'provider-models';
+  modelsInput.rows = 3;
+  modelsInput.value = (p.models ?? []).map((m) => (m.name && m.name !== m.id ? `${m.id}|${m.name}` : m.id)).join('\n');
+  ml.appendChild(modelsInput);
+  card.appendChild(ml);
+
+  const actions = document.createElement('div');
+  actions.className = 'provider-actions';
+  const testBtn = document.createElement('button');
+  testBtn.textContent = '测试连接';
+  const saveBtn = document.createElement('button');
+  saveBtn.className = 'primary';
+  saveBtn.textContent = '保存';
+  const result = document.createElement('span');
+  result.className = 'provider-test-result';
+  actions.appendChild(testBtn);
+  actions.appendChild(saveBtn);
+  actions.appendChild(result);
+  card.appendChild(actions);
+
+  // 测试连接：优先用输入框里的 key；留空且有已保存 key 时由后端按 providerId 取原 key
+  testBtn.onclick = async () => {
+    const baseUrl = urlInput.value.trim();
+    if (!baseUrl) {
+      result.textContent = '请先填写 Base URL';
+      result.className = 'provider-test-result fail';
+      return;
+    }
+    result.textContent = '测试中…';
+    result.className = 'provider-test-result';
+    const body = { baseUrl, providerId: p.id };
+    if (keyInput.value.trim()) body.apiKey = keyInput.value.trim();
+    const res = await api('/api/providers/test', { method: 'POST', body: JSON.stringify(body) });
+    if (res.ok) {
+      // 拉取到的真实模型列表自动并入模型输入框（去重，保留用户自填项），
+      // 保存后模型切换下拉即可用全部模型（模板写死列表的局限由此解除）
+      const fetched = Array.isArray(res.models) ? res.models : [];
+      if (fetched.length) {
+        const existing = new Set(
+          modelsInput.value.split('\n').map((s) => s.trim().split('|')[0]).filter(Boolean)
+        );
+        const added = fetched.filter((id) => !existing.has(id));
+        if (added.length) {
+          modelsInput.value = [modelsInput.value.trim(), ...added].filter(Boolean).join('\n');
+          result.textContent = `✓ 连接成功（${res.status}，共 ${fetched.length} 个模型，新增 ${added.length} 个已并入列表，保存后生效）`;
+        } else {
+          result.textContent = `✓ 连接成功（${res.status}，模型列表已是最新，${fetched.length} 个模型可用）`;
+        }
+      } else {
+        result.textContent = `✓ 连接成功（${res.status}，但未拉到模型列表，可手动填写）`;
+      }
+      result.className = 'provider-test-result ok';
+    } else {
+      result.textContent = `✗ ${res.error ?? '连接失败'}`;
+      result.className = 'provider-test-result fail';
+    }
+  };
+
+  // 保存：整体 PUT（未修改的条目去掉 apiKey 字段 → 后端保留原密钥）
+  saveBtn.onclick = async () => {
+    const body = {
+      id: p.id,
+      name: nameInput.value.trim() || p.id,
+      baseUrl: urlInput.value.trim(),
+      models: parseModels(modelsInput.value),
+      builtin: p.builtin,
+      enabled: p.enabled,
+      protocol: p.protocol,
+    };
+    // 密钥：已有 key 且输入框留空 → 不传（后端保留）；否则传输入值（空串=清空）
+    if (!(p.hasKey && !keyInput.value.trim())) body.apiKey = keyInput.value;
+    const next = state.providers.map((x) => (x.id === p.id ? body : stripForPut(x)));
+    saveBtn.disabled = true;
+    saveBtn.textContent = '保存中…';
+    const res = await api('/api/providers', {
+      method: 'PUT',
+      body: JSON.stringify({ providers: next, defaultProviderId: state.defaultProviderId, defaultModel: state.defaultModel }),
+    });
+    saveBtn.disabled = false;
+    saveBtn.textContent = '保存';
+    if (!res.ok) {
+      result.textContent = `✗ ${res.error ?? '保存失败'}`;
+      result.className = 'provider-test-result fail';
+      return;
+    }
+    state.providers = res.providers ?? next; // 后端返回脱敏结果（hasKey 同步更新）
+    result.textContent = '✓ 已保存';
+    result.className = 'provider-test-result ok';
+    renderProviderArea();
+    renderModelSelect();
+  };
+
+  // 删除：从列表移除后整体 PUT
+  delBtn.onclick = async () => {
+    const next = state.providers.filter((x) => x.id !== p.id);
+    const res = await api('/api/providers', {
+      method: 'PUT',
+      body: JSON.stringify({ providers: next.map(stripForPut), defaultProviderId: state.defaultProviderId, defaultModel: state.defaultModel }),
+    });
+    if (!res.ok) {
+      addMsg('sys', res.error ?? '删除失败');
+      return;
+    }
+    state.providers = res.providers ?? next;
+    renderProviderArea();
+    renderModelSelect();
+  };
+
+  return card;
+}
+
+// 表单字段行（label + input）
+function field(card, labelText, value, placeholder) {
+  const label = document.createElement('label');
+  const span = document.createElement('span');
+  span.textContent = labelText;
+  const input = document.createElement('input');
+  input.value = value;
+  input.placeholder = placeholder;
+  label.appendChild(span);
+  label.appendChild(input);
+  card.appendChild(label);
+  return input;
+}
+
+// 添加供应商行：模板下拉（异步填充）+ 一键导入 + 添加按钮
+function renderAddRow() {
+  const row = document.createElement('div');
+  row.className = 'provider-add';
+  const sel = document.createElement('select');
+  const customOpt = document.createElement('option');
+  customOpt.value = '__custom__';
+  customOpt.textContent = '自定义供应商…';
+  sel.appendChild(customOpt);
+  const loading = document.createElement('option');
+  loading.value = '';
+  loading.textContent = '（模板加载中…）';
+  sel.appendChild(loading);
+  sel.disabled = true;
+  const addBtn = document.createElement('button');
+  addBtn.textContent = '添加';
+  addBtn.disabled = true;
+  const importBtn = document.createElement('button');
+  importBtn.textContent = '从主设置一键导入';
+  row.appendChild(sel);
+  row.appendChild(addBtn);
+  row.appendChild(importBtn);
+  // 模板清单（后端预置）
+  api('/api/providers/templates').then((res) => {
+    const tpls = res.ok ? (res.templates ?? []) : [];
+    const oldValue = sel.value;
+    sel.innerHTML = '';
+    sel.appendChild(customOpt);
+    for (const t of tpls) {
+      const opt = document.createElement('option');
+      opt.value = t.id;
+      opt.textContent = `${t.name}（${t.id}）`;
+      sel.appendChild(opt);
+    }
+    sel.disabled = false;
+    addBtn.disabled = false;
+    // 恢复用户已选值（模板加载慢时可能已选择）；异常环境（如测试 stub 无 options）跳过
+    try {
+      if ([...sel.options].some((o) => o.value === oldValue)) sel.value = oldValue;
+    } catch { /* 忽略 */ }
+  });
+  addBtn.onclick = async () => {
+    if (sel.value === '__custom__') {
+      await addProviderToState({ id: genProviderId(), name: '新供应商', baseUrl: '', apiKey: '', builtin: false, protocol: 'openai', enabled: true, models: [] });
+      return;
+    }
+    const tpls = await api('/api/providers/templates').then((r) => (r.ok ? (r.templates ?? []) : []));
+    const tpl = tpls.find((t) => t.id === sel.value);
+    if (!tpl) return;
+    await addProviderToState({
+      id: tpl.id,
+      name: tpl.name,
+      baseUrl: tpl.baseUrl,
+      apiKey: '',
+      builtin: true,
+      protocol: tpl.protocol,
+      enabled: true,
+      models: (tpl.models ?? []).map((m) => ({ id: m.id, name: m.name || m.id, params: {} })),
+    });
+  };
+  importBtn.onclick = async () => {
+    const r = await api('/api/providers/import', { method: 'POST', body: JSON.stringify({}) });
+    if (!r.ok) {
+      addMsg('sys', r.error ?? '导入失败');
+      return;
+    }
+    if (!(r.imported ?? []).length) {
+      addMsg('sys', r.note ?? '没有可导入的新供应商');
+    }
+    renderProviders();
+  };
+  return row;
+}
+
+// 把新供应商追加进列表并整体保存（模板/自定义添加共用）
+async function addProviderToState(newProvider) {
+  if (state.providers.some((x) => x.id === newProvider.id)) {
+    addMsg('sys', `供应商 ${newProvider.id} 已存在`);
+    return;
+  }
+  const next = [...state.providers, newProvider];
+  const res = await api('/api/providers', {
+    method: 'PUT',
+    body: JSON.stringify({
+      providers: next.map(stripForPut),
+      defaultProviderId: state.defaultProviderId || newProvider.id,
+      defaultModel: state.defaultModel,
+    }),
+  });
+  if (!res.ok) {
+    addMsg('sys', res.error ?? '添加失败');
+    return;
+  }
+  state.providers = res.providers ?? next;
+  if (!state.defaultProviderId) state.defaultProviderId = newProvider.id;
+  renderProviderArea();
+  renderModelSelect();
 }
 
 // ---------- 主对话内容选择器（T6） ----------
@@ -1070,7 +1434,18 @@ $('input').addEventListener('keydown', (e) => {
     send();
   }
 });
-$('btn-settings').onclick = () => $('settings-panel').classList.remove('hidden');
+$('btn-settings').onclick = () => {
+  $('settings-panel').classList.remove('hidden');
+  renderProviders(); // 打开设置时刷新供应商配置（含模型下拉）
+};
+// 发消息框旁模型切换：切换即保存默认模型（立即生效，下一里程碑直连发送直接读取）
+$('model-select').onchange = () => {
+  if ($('model-select').disabled) return;
+  const mid = $('model-select').value;
+  const provider = state.providers.find((p) => p.id === state.defaultProviderId && p.enabled);
+  if (!provider || !mid) return;
+  saveDefault(provider.id, mid);
+};
 $('btn-close-settings').onclick = async () => {
   // REVIEW3 M8：保存失败不关面板（用户看到错误提示后修正）；成功才关闭
   const ok = await saveSettings();

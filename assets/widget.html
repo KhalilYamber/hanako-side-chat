@@ -10,7 +10,7 @@
     // 且 host 有 5 秒超时，所以这里用 inline 脚本在 HTML 解析时立即发送，不依赖 app.js 的加载。
     try { window.parent.postMessage({ type: "ready" }, "*"); } catch (e) {}
   </script>
-  <link rel="stylesheet" href="/api/plugins/side-chat/assets/widget.css?v=20">
+  <link rel="stylesheet" href="/api/plugins/side-chat/assets/widget.css?v=23">
 </head>
 <body data-surface="widget">
   <div id="app">
@@ -50,8 +50,9 @@
     <!-- 消息区 -->
     <main id="messages"></main>
 
-    <!-- 输入区 -->
+    <!-- 输入区：模型切换下拉（当前供应商模型列表，切换即生效）+ 输入框 + 发送 -->
     <footer id="composer">
+      <select id="model-select" title="切换模型（立即生效）"></select>
       <textarea id="input" rows="2" placeholder="在此提问（参考上下文会自动带入主对话内容）"></textarea>
       <button id="btn-send">发送</button>
     </footer>
@@ -63,34 +64,43 @@
     <button id="ctx-menu-del" class="danger">🗑 删除</button>
   </div>
 
-  <!-- 设置面板 -->
+  <!-- 设置面板（v22：分组卡片化，参考上下文/自我意识/模型供应商/运行诊断 四组） -->
   <div id="settings-panel" class="hidden">
     <div class="settings-header">
       <h3>辅助对话设置</h3>
       <button id="btn-close-settings">保存并关闭</button>
     </div>
-    <label>参考上下文策略
-      <select id="set-context-mode">
-        <option value="windowed">最近 N 轮 + 摘要（省 token）</option>
-        <option value="full">全量</option>
-      </select>
-    </label>
-    <label id="wrap-window">最近轮数 N
-      <input id="set-window" type="number" min="5" max="200" step="5">
-    </label>
-    <label class="row"><input id="set-thinking" type="checkbox"> 包含主对话思考过程</label>
-    <hr>
+    <section class="settings-group">
+      <h4 class="group-title">参考上下文</h4>
+      <p class="group-desc">决定每次提问时随附的主对话内容范围：最近 N 轮 + 摘要（省 token），或全量。</p>
+      <label>参考上下文策略
+        <select id="set-context-mode">
+          <option value="windowed">最近 N 轮 + 摘要（省 token）</option>
+          <option value="full">全量</option>
+        </select>
+      </label>
+      <label id="wrap-window">最近轮数 N
+        <input id="set-window" type="number" min="5" max="200" step="5">
+      </label>
+      <label class="row"><input id="set-thinking" type="checkbox"> 包含主对话思考过程</label>
+    </section>
     <!-- 辅助对话自我意识提示词编辑区：置于上下文设置之后、模型选择（供应商）之前，随「保存设置」一并提交 -->
-    <h4>辅助对话自我意识提示词</h4>
-    <p class="settings-hint">定义辅助对话的身份与行为准则，作为附加系统提示词注入（不替换原有系统提示词）。默认内容由插件提供，可自由编辑；清空则恢复内置默认。</p>
-    <textarea id="set-self-prompt" rows="12"></textarea>
-    <hr>
-    <h4>供应商</h4>
-    <div id="provider-area"></div>
-    <hr>
-    <h4>运行诊断</h4>
-    <button id="btn-diag">运行诊断</button>
-    <pre id="diag-output" class="hidden"></pre>
+    <section class="settings-group">
+      <h4 class="group-title">自我意识提示词</h4>
+      <p class="group-desc">定义辅助对话的身份与行为准则，作为附加系统提示词注入（不替换原有系统提示词）。默认内容由插件提供，可自由编辑；清空则恢复内置默认。</p>
+      <textarea id="set-self-prompt" rows="12"></textarea>
+    </section>
+    <section class="settings-group">
+      <h4 class="group-title">模型供应商</h4>
+      <p class="group-desc">直连 OpenAI 兼容 API（DeepSeek / OpenAI / 硅基流动 / Ollama / OpenRouter…）。预置模板可直接使用，也可自由编辑；自定义供应商全手填。<b>API 密钥仅存本机</b>（明文本地存储，不随任何导出或同步离开本机）。</p>
+      <div id="provider-area"></div>
+    </section>
+    <section class="settings-group">
+      <h4 class="group-title">运行诊断</h4>
+      <p class="group-desc">输出环境健康自检信息，用于排查插件加载与主会话定位问题。</p>
+      <button id="btn-diag">运行诊断</button>
+      <pre id="diag-output" class="hidden"></pre>
+    </section>
   </div>
 
   <!-- 预览浮层：主对话内容选择器（T6） -->
@@ -108,6 +118,6 @@
   <div id="page-ext" class="hidden" data-page-ext><!-- 页面模式扩展区：未来大界面功能（信息整理/写作分析）挂载于此 --></div>
 
   <script src="/api/plugins/side-chat/assets/markdown.js?v=3"></script>
-<script src="/api/plugins/side-chat/assets/app.js?v=31"></script>
+<script src="/api/plugins/side-chat/assets/app.js?v=33"></script>
 </body>
 </html>

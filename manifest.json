@@ -73,6 +73,24 @@
           "default": "",
           "title": "辅助对话自我意识提示词",
           "description": "定义辅助对话身份与行为准则的附加系统提示词（可编辑；留空时使用插件内置默认，详见 README）。REVIEW3 H1：须在 manifest 声明才能通过 schema 校验持久化。"
+        },
+        "providersJson": {
+          "type": "string",
+          "default": "",
+          "title": "供应商配置（JSON）",
+          "description": "插件独立供应商列表（baseUrl / API key / 模型列表），JSON 序列化明文存储。密钥仅存本机，不随任何导出/同步离开本机。留空表示未配置（此时回退主设置通道）。"
+        },
+        "defaultProviderId": {
+          "type": "string",
+          "default": "",
+          "title": "默认供应商",
+          "description": "发消息时使用的供应商 id。留空时自动取第一个可用的供应商。"
+        },
+        "defaultModel": {
+          "type": "string",
+          "default": "",
+          "title": "默认模型",
+          "description": "默认供应商下的模型 id。留空时自动取该供应商第一个可用模型。"
         }
       }
     }

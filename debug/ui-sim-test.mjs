@@ -413,6 +413,168 @@ async function scenarioDoubleEnter() {
   await flush();
 }
 
+// ---------- v32：模型供应商（模型下拉 + 切换保存 + 卡片保存） ----------
+
+const PROVIDER_DS = (hasKey = false) => ({
+  id: 'ds',
+  name: 'DeepSeek',
+  baseUrl: 'https://api.deepseek.com/v1',
+  apiKey: '',
+  hasKey,
+  builtin: true,
+  protocol: 'openai',
+  enabled: true,
+  models: [
+    { id: 'deepseek-chat', name: 'DeepSeek Chat', params: {} },
+    { id: 'deepseek-reasoner', name: 'DeepSeek Reasoner', params: {} },
+  ],
+});
+const PROVIDERS_BODY = { ok: true, providers: [PROVIDER_DS(true)], defaultProviderId: 'ds', defaultModel: 'deepseek-chat' };
+
+// respond GET /api/providers：renderProviderArea 每次重渲染都会发 GET /api/providers/templates
+// （可能先入队），其 url 也包含 '/api/providers'，须先精确消费掉，避免 urlSubstr 误匹配
+function respondProviders(app, body) {
+  for (const r of app.requests) {
+    if (!r.resolved && r.url.includes('/api/providers/templates')) {
+      r.resolved = true;
+      r.resolve(jsonResponse({ ok: true, templates: [] }));
+    }
+  }
+  respond(app.requests, '/api/providers', body);
+}
+
+async function scenarioModelSelectAndSwitch() {
+  const app = loadApp();
+  await boot(app, [session('S1', '测试会话')]);
+  // loadState → renderProviders 的 GET /api/providers（fire-and-forget，此时已入队）
+  respondProviders(app, PROVIDERS_BODY);
+  await flush();
+  const sel = app.byId.get('model-select');
+  check('v32 模型下拉渲染两个选项', sel.children.length === 2, `len=${sel.children.length}`);
+  check('v32 模型下拉未禁用', sel.disabled === false, `disabled=${sel.disabled}`);
+  check('v32 模型下拉默认选中 deepseek-chat', sel.children[0]?.selected === true, sel.children.map((o) => o.value).join(','));
+  // 切换模型：设 value + 触发 onchange → POST /api/providers/default
+  sel.value = 'deepseek-reasoner';
+  sel.onchange();
+  await flush();
+  const req = app.requests.find((r) => !r.resolved && r.url.includes('/api/providers/default') && r.options.method === 'POST');
+  check('v32 切换模型发出 POST default', !!req, 'no req');
+  if (req) {
+    const body = JSON.parse(req.options.body);
+    check('v32 切换模型 body 正确', body.defaultProviderId === 'ds' && body.defaultModel === 'deepseek-reasoner', JSON.stringify(body));
+    req.resolved = true;
+    req.resolve(jsonResponse({ ok: true }));
+    await flush();
+  }
+}
+
+async function scenarioProviderCardSave() {
+  const app = loadApp();
+  await boot(app, []);
+  respondProviders(app, PROVIDERS_BODY);
+  await flush();
+  // 打开设置：btn-settings 触发 renderProviders 再拉一次
+  app.byId.get('btn-settings').onclick();
+  await flush();
+  respondProviders(app, PROVIDERS_BODY);
+  await flush();
+  const area = app.byId.get('provider-area');
+  check('v32 设置面板渲染供应商卡片', area.children.length >= 2, `len=${area.children.length}`);
+  const card = area.children[1];
+  const nameInput = card.children[0].children[0]; // head > name input
+  check('v32 卡片名称回显', nameInput.value === 'DeepSeek', nameInput.value);
+  nameInput.value = 'DeepSeek 改名';
+  const actions = card.children.find((c) => c.className === 'provider-actions');
+  check('v32 卡片操作行存在', !!actions, 'no actions');
+  actions.children[1].onclick(); // 保存按钮
+  await flush();
+  const putReq = app.requests.find((r) => !r.resolved && r.url.includes('/api/providers') && r.options.method === 'PUT');
+  check('v32 保存发出 PUT /api/providers', !!putReq, 'no put');
+  if (putReq) {
+    const body = JSON.parse(putReq.options.body);
+    check('v32 PUT body：改名生效', body.providers.length === 1 && body.providers[0].name === 'DeepSeek 改名', JSON.stringify(body.providers));
+    check('v32 PUT body：apiKey 字段缺省（后端保留原密钥）', !('apiKey' in body.providers[0]), JSON.stringify(body.providers[0]));
+    check('v32 PUT body：defaults 保留', body.defaultProviderId === 'ds' && body.defaultModel === 'deepseek-chat');
+    putReq.resolved = true;
+    putReq.resolve(jsonResponse({ ok: true, providers: [PROVIDER_DS(true)] }));
+    await flush();
+  }
+  // 卡片保存后 provider-area 重渲染（保存按钮恢复可用）
+  const area2 = app.byId.get('provider-area');
+  check('v32 保存后卡片区重渲染', area2.children.length >= 2, `len=${area2.children.length}`);
+}
+
+async function scenarioProviderKeyInput() {
+  const app = loadApp();
+  await boot(app, []);
+  respondProviders(app, PROVIDERS_BODY);
+  await flush();
+  app.byId.get('btn-settings').onclick();
+  await flush();
+  respondProviders(app, PROVIDERS_BODY);
+  await flush();
+  const card = app.byId.get('provider-area').children[1];
+  // 卡片字段顺序：head、Base URL label、密钥 label、模型 label、actions
+  const keyInput = card.children[2].children[1];
+  check('v32 密钥输入框为密码遮罩', keyInput.type === 'password', keyInput.type);
+  check('v32 密钥输入框占位提示「留空保持不变」', keyInput.placeholder.includes('留空保持不变'), keyInput.placeholder);
+  // 未填新 key → 保存时不传 apiKey 字段（保留原密钥）
+  const actions = card.children.find((c) => c.className === 'provider-actions');
+  actions.children[1].onclick();
+  await flush();
+  const putReq = app.requests.find((r) => !r.resolved && r.url.includes('/api/providers') && r.options.method === 'PUT');
+  check('v32 密钥留空保存：apiKey 字段缺省', !!putReq && !('apiKey' in JSON.parse(putReq.options.body).providers[0]));
+  if (putReq) {
+    putReq.resolved = true;
+    putReq.resolve(jsonResponse({ ok: true, providers: [PROVIDER_DS(true)] }));
+    await flush();
+  }
+  // 填写新 key → 保存时携带
+  const card2 = app.byId.get('provider-area').children[1];
+  const keyInput2 = card2.children[2].children[1];
+  keyInput2.value = 'sk-new-key';
+  const actions2 = card2.children.find((c) => c.className === 'provider-actions');
+  actions2.children[1].onclick();
+  await flush();
+  const putReq2 = app.requests.find((r) => !r.resolved && r.url.includes('/api/providers') && r.options.method === 'PUT');
+  check('v32 填写新 key：apiKey 字段携带', !!putReq2 && JSON.parse(putReq2.options.body).providers[0].apiKey === 'sk-new-key');
+  if (putReq2) {
+    putReq2.resolved = true;
+    putReq2.resolve(jsonResponse({ ok: true, providers: [PROVIDER_DS(true)] }));
+    await flush();
+  }
+}
+
+async function scenarioTestConnectMergesModels() {
+  const app = loadApp();
+  await boot(app, []);
+  respondProviders(app, PROVIDERS_BODY);
+  await flush();
+  app.byId.get('btn-settings').onclick();
+  await flush();
+  respondProviders(app, PROVIDERS_BODY);
+  await flush();
+  const card = app.byId.get('provider-area').children[1];
+  const modelsInput = card.children[3].children[1];
+  check('v33 测试前模型列表为模板两个', modelsInput.value.split('\n').length === 2, modelsInput.value);
+  // 点击「测试连接」（actions 第一个按钮）→ POST /api/providers/test 返回真实模型列表
+  const actions = card.children.find((c) => c.className === 'provider-actions');
+  actions.children[0].onclick();
+  await flush();
+  const testReq = app.requests.find((r) => !r.resolved && r.url.includes('/api/providers/test') && r.options.method === 'POST');
+  check('v33 测试连接发出 POST test', !!testReq, 'no req');
+  if (testReq) {
+    testReq.resolved = true;
+    testReq.resolve(jsonResponse({ ok: true, status: 200, models: ['deepseek-chat', 'deepseek-v4-flash'] }));
+    await flush();
+    const lines = modelsInput.value.split('\n').map((s) => s.trim()).filter(Boolean);
+    const chatLines = lines.filter((l) => l.startsWith('deepseek-chat'));
+    check('v33 拉取模型并入列表（去重保留已有）', lines.length === 3 && lines.some((l) => l.startsWith('deepseek-v4-flash')) && chatLines.length === 1, modelsInput.value);
+    const result = actions.children[2];
+    check('v33 提示含新增模型数量', result.textContent.includes('新增 1 个'), result.textContent);
+  }
+}
+
 // ---------- 主流程 ----------
 
 async function main() {
@@ -440,6 +602,14 @@ async function main() {
   await scenarioCreatingThenSend();
   console.log('');
   await scenarioDoubleEnter();
+  console.log('');
+  await scenarioModelSelectAndSwitch();
+  console.log('');
+  await scenarioProviderCardSave();
+  console.log('');
+  await scenarioProviderKeyInput();
+  console.log('');
+  await scenarioTestConnectMergesModels();
   console.log('');
   const passed = results.filter((r) => r.ok).length;
   console.log(`---- ${passed}/${results.length} PASS ----`);

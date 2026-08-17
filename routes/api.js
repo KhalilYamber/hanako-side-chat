@@ -18,6 +18,18 @@ let _store = null;
 async function loadStore() {
   return _store ??= import(`../lib/store.js?t=${Date.now()}`);
 }
+let _profile = null;
+async function loadProfile() {
+  return _profile ??= import(`../lib/profile-provider.js?t=${Date.now()}`);
+}
+let _providerStore = null;
+async function loadProviderStore() {
+  return _providerStore ??= import(`../lib/provider-store.js?t=${Date.now()}`);
+}
+let _modelAdapter = null;
+async function loadModelAdapter() {
+  return _modelAdapter ??= import(`../lib/model-adapter.js?t=${Date.now()}`);
+}
 
 // 默认「自我意识」提示词：辅助对话的身份定位。
 // 用户可在设置面板编辑（配置字段 selfPrompt），发送时作为附加 system 块注入，
@@ -130,6 +142,18 @@ export default function registerSideChatRoutes(app, ctx) {
         ? { exists: true, lastRoundCount: cache.lastRoundCount ?? 0, mainSessionPath: cache.mainSessionPath ?? null, lastPending: !!cache.lastPending, hasSummary: !!(cache.summaryText ?? '') }
         : { exists: false },
     });
+  });
+
+  // ---------- 人格读取（ProfileProvider 只读接口） ----------
+
+  // 读取主对话 agent 人格（identity/ishiki/personality/name/yuan）。
+  // 供新架构直连 API 时组装 system 提示词；当前官方管道路径下仅诊断/调试用。
+  // agentId 取 query（显式优先），缺省回落 requestAgentId。内部失败不报错，
+  // 返回空字段（profile-provider 不 throw 契约）。
+  app.get('/api/profile', async (c) => {
+    const agentId = c.req.query('agentId') || requestAgentId(c) || '';
+    const profile = await (await loadProfile()).getProfile(pctx, agentId);
+    return c.json({ ok: true, agentId, ...profile });
   });
 
   // ---------- 主对话实时同步（SSE） ----------
@@ -504,42 +528,104 @@ export default function registerSideChatRoutes(app, ctx) {
     return c.json({ ok: true, config: cfg });
   });
 
-  // ---------- 供应商 ----------
+  // ---------- 供应商（插件独立配置，直连 API 架构） ----------
 
+  // GET /api/providers —— 插件自己的供应商配置。apiKey 脱敏：明文密钥绝不回传
+  // （回 hasKey 布尔，供 UI 提示「密钥已保存，留空保持不变」），避免日志/调试链路泄露。
   app.get('/api/providers', async (c) => {
+    const ps = await loadProviderStore();
+    const data = await ps.loadProviders(pctx);
+    return c.json({
+      ok: true,
+      providers: data.providers.map(maskProvider),
+      defaultProviderId: data.defaultProviderId,
+      defaultModel: data.defaultModel,
+    });
+  });
+
+  // PUT /api/providers —— 整体保存（providers + 默认选择）。
+  // apiKey 合并规则见 provider-store.saveProviders：新对象缺省 apiKey 字段时保留原 key
+  // （前端拿到的是脱敏数据，整体提交不会丢密钥）；显式提供（含空串）则覆盖/清空。
+  app.put('/api/providers', async (c) => {
+    const body = await c.req.json().catch(() => ({}));
+    const ps = await loadProviderStore();
+    const res = await ps.saveProviders(pctx, {
+      providers: Array.isArray(body.providers) ? body.providers : undefined,
+      defaultProviderId: body.defaultProviderId,
+      defaultModel: body.defaultModel,
+    });
+    if (!res.ok) return c.json({ ok: false, error: `供应商保存失败：${res.error}` });
+    return c.json({ ok: true, providers: res.providers.map(maskProvider) });
+  });
+
+  // POST /api/providers/default —— 只更新默认供应商/模型（模型切换下拉用，轻量不碰列表）
+  app.post('/api/providers/default', async (c) => {
+    const body = await c.req.json().catch(() => ({}));
+    const ps = await loadProviderStore();
+    const res = await ps.saveDefaults(pctx, {
+      defaultProviderId: body.defaultProviderId,
+      defaultModel: body.defaultModel,
+    });
+    if (!res.ok) return c.json({ ok: false, error: `默认选择保存失败：${res.error}` });
+    return c.json({ ok: true });
+  });
+
+  // POST /api/providers/test —— 测试连接：GET {规整 baseUrl}/models 轻量验证 baseUrl+key
+  // （key 仅本次请求使用，不落盘；用户确认可用后再保存）
+  app.post('/api/providers/test', async (c) => {
+    const body = await c.req.json().catch(() => ({}));
+    const adapter = await loadModelAdapter();
+    const res = await adapter.testConnection({ baseUrl: body.baseUrl, apiKey: body.apiKey });
+    if (!res.ok) {
+      const err = res.error ?? {};
+      return c.json({ ok: false, error: err.message ?? '连接失败', ...(err.status ? { status: err.status } : {}) });
+    }
+    return c.json({ ok: true, status: res.status, models: res.models });
+  });
+
+  // GET /api/providers/templates —— 预置模板清单（不含任何密钥，前端「添加供应商」下拉用）
+  app.get('/api/providers/templates', async (c) => {
+    const ps = await loadProviderStore();
+    const templates = ps.PRESET_PROVIDERS.map(({ apiKey, ...rest }) => rest);
+    return c.json({ ok: true, templates });
+  });
+
+  // GET /api/providers/meta —— 主设置供应商元数据（仅 baseUrl/api/models，无密钥），
+  // 供「从主设置一键导入」按钮使用（旧 GET /api/providers 逻辑迁至此处）。
+  app.get('/api/providers/meta', async (c) => {
     const meta = readMainProviderMeta(pctx);
     return c.json({ ok: true, providers: meta });
   });
 
+  // POST /api/providers/import —— 把主设置元数据导入为插件 providers（builtin=false，
+  // apiKey 留空待用户填写）。替代旧 providerImportJson 快照方案（密钥不再进 config 快照）。
   app.post('/api/providers/import', async (c) => {
     const body = await c.req.json().catch(() => ({}));
     const all = readMainProviderMeta(pctx);
     const want = Array.isArray(body.ids) && body.ids.length ? body.ids : Object.keys(all);
-    const cfg = await readConfig(pctx);
+    const ps = await loadProviderStore();
+    const data = await ps.loadProviders(pctx);
+    const existing = new Set(data.providers.map((p) => p.id));
+    const imported = [];
     for (const id of want) {
-      if (all[id]) {
-        cfg.importedProviders[id] = {
-          baseUrl: all[id].baseUrl,
-          api: all[id].api,
-          models: all[id].models,
-        };
-      }
+      if (!all[id] || existing.has(id)) continue;
+      data.providers.push({
+        id,
+        name: id,
+        baseUrl: all[id].baseUrl,
+        apiKey: '',
+        builtin: false,
+        protocol: all[id].api || 'openai',
+        enabled: true,
+        models: (all[id].models ?? []).map((m) => ({ id: m, name: m, params: {} })),
+      });
+      imported.push(id);
     }
-    if (!cfg.model && want.length) {
-      const first = cfg.importedProviders[want[0]];
-      if (first?.models?.length) cfg.model = `${want[0]}/${first.models[0]}`;
-    }
-    // 快照存进 manifest 声明的 providerImportJson 字段（不含密钥）
-    await pctx.config.setMany({
-      providerImportJson: JSON.stringify(cfg.importedProviders),
-      ...(cfg.model ? { model: cfg.model } : {}),
-    });
-    return c.json({ ok: true, imported: Object.keys(cfg.importedProviders), selected: cfg.model });
-  });
-
-  app.get('/api/providers/ready', async (c) => {
-    const cfg = await readConfig(pctx);
-    return c.json({ ok: true, imported: cfg.importedProviders ?? {}, selected: cfg.model ?? '' });
+    if (!imported.length) return c.json({ ok: true, imported: [], note: '没有可导入的新供应商（可能已全部存在）' });
+    if (!data.defaultProviderId && want.length && all[want[0]]) data.defaultProviderId = want[0];
+    const res = await ps.saveProviders(pctx, data);
+    if (!res.ok) return c.json({ ok: false, error: `导入失败：${res.error}` });
+    return c.json({ ok: true, imported, selected: data.defaultProviderId });
   });
 }
 
@@ -571,6 +657,13 @@ function truncate(s, max) {
   return s.length > max ? s.slice(0, max) + '…' : s;
 }
 
+// 供应商脱敏：明文 apiKey 不出后端（回传 hasKey 布尔，供 UI 提示「密钥已保存」）
+function maskProvider(p) {
+  if (!p || typeof p !== 'object') return p;
+  const { apiKey, ...rest } = p;
+  return { ...rest, apiKey: '', hasKey: !!String(apiKey ?? '').trim() };
+}
+
 async function readConfig(ctx) {
   const base = {
     contextMode: 'windowed',
@@ -580,10 +673,13 @@ async function readConfig(ctx) {
     selfPrompt: DEFAULT_SELF_PROMPT,
     providerImportJson: '',
     importedProviders: {},
+    providersJson: '',
+    defaultProviderId: '',
+    defaultModel: '',
   };
   const cur = ctx.config?.get ? await ctx.config.get() : null;
   if (cur && typeof cur === 'object') {
-    for (const k of ['contextMode', 'windowSize', 'includeThinking', 'model', 'selfPrompt', 'providerImportJson']) {
+    for (const k of ['contextMode', 'windowSize', 'includeThinking', 'model', 'selfPrompt', 'providerImportJson', 'providersJson', 'defaultProviderId', 'defaultModel']) {
       if (cur[k] !== undefined) base[k] = cur[k];
     }
   }
