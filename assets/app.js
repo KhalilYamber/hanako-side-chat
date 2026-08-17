@@ -52,10 +52,11 @@ async function api(path, opts = {}) {
   // fetch 超时兜底：网络挂起时不能让 busy/轮询永久锁死（REVIEW1 发现 16 残余）。
   // 默认 30 秒；opts.timeout 可覆盖（REVIEW3 M10：POST /api/sessions 含快照摘要模型调用，放宽到 90 秒）
   let abortTimer = null;
+  let timeoutMs = 30000; // 默认 30 秒；opts.timeout 可覆盖（REVIEW3 M10）
   if (!opts.signal) {
     const ctrl = new AbortController();
-    const ms = Number(opts.timeout) > 0 ? Number(opts.timeout) : 30000;
-    abortTimer = setTimeout(() => ctrl.abort(), ms);
+    timeoutMs = Number(opts.timeout) > 0 ? Number(opts.timeout) : 30000;
+    abortTimer = setTimeout(() => ctrl.abort(), timeoutMs);
     opts = { ...opts, signal: ctrl.signal };
   }
   let res;
@@ -65,7 +66,7 @@ async function api(path, opts = {}) {
       ...opts,
     });
   } catch (e) {
-    return { ok: false, error: `网络错误：${e?.name === 'AbortError' ? '请求超时（30 秒）' : (e?.message ?? e)}` };
+    return { ok: false, error: `网络错误：${e?.name === 'AbortError' ? `请求超时（${Math.round(timeoutMs / 1000)} 秒）` : (e?.message ?? e)}` };
   } finally {
     if (abortTimer) clearTimeout(abortTimer);
   }

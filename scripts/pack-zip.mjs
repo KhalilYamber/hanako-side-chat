@@ -110,16 +110,20 @@ function readManifestVersion() {
 }
 
 function collectManifest() {
-  let out;
+  let tracked, untracked;
   try {
-    out = execFileSync('git', ['ls-files'], { cwd: ROOT, encoding: 'utf8' });
+    // 红队 P0/P2-16：打包清单 = 已跟踪 + 未跟踪未忽略文件（git ls-files --others
+    // 排除被 .gitignore 忽略的构建产物），防止新模块忘 git add 导致发布漏包
+    tracked = execFileSync('git', ['ls-files'], { cwd: ROOT, encoding: 'utf8' });
+    untracked = execFileSync('git', ['ls-files', '--others', '--exclude-standard'], { cwd: ROOT, encoding: 'utf8' });
   } catch (e) {
     throw new Error(`git ls-files 失败（需在 git 仓库内运行）：${e.message}`);
   }
-  return out
+  const seen = new Set();
+  return (tracked + '\n' + untracked)
     .split('\n')
     .map((s) => s.trim())
-    .filter((s) => s && !EXCLUDE.has(s));
+    .filter((s) => s && !EXCLUDE.has(s) && !seen.has(s) && (seen.add(s), true));
 }
 
 function main() {
