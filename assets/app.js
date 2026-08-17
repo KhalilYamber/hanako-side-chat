@@ -405,17 +405,16 @@ async function pollStateOnce() {
     // 列表浮层打开期间不重渲染（避免展开态被打断/闪动），触发器标题不受影响；
     // 关闭后下一次打开时由 openSessionList 重渲染，自然反映最新列表（取舍见 A5 简单方案）。
     if (!isSessionListOpen()) renderSessionList();
-    // 会话失配回退：列表刷新后当前选中会话可能已被隔离过滤/删除（主对话切换/隔离），
-    // 触发器仍显示旧标题但 currentId 是旧值，后续发消息/删除会打到不可见会话。
-    // 自动回退到新列表第一个（空列表时 openSession(null) 走空态；openSession 会收起列表）。
-    // 创建期除外（!state.creating）：newSession 正把新建会话设为当前会话（快照耗时下 POST
-    // 未返回期间轮询会先把新会话写进列表，形成交错），若此时触发回退会把 currentId 改写为
-    // null/其它会话，并经 openSeq 丢弃 newSession 的 openSession 结果，导致「新建后未进入」
-    // （0→1 首建时列表为空，openSession(null) 直接回到「无会话」空态）。创建期间交给
-    // newSession 自己收口。
-    if (!state.creating && state.currentId && !state.sessions.some((s) => s.id === state.currentId)) {
-      await openSession(state.sessions[0]?.id ?? null);
-    }
+  }
+  // 会话失配回退：独立于 idSeq 变化，非创建期每轮校验一次（修复 H3）。
+  // 创建期除外（!state.creating）：newSession 正把新建会话设为当前会话（快照耗时下 POST
+  // 未返回期间轮询会先把新会话写进列表，形成交错），若此时触发回退会把 currentId 改写为
+  // null/其它会话，并经 openSeq 丢弃 newSession 的 openSession 结果，导致「新建后未进入」
+  // （0→1 首建时列表为空，openSession(null) 直接回到「无会话」空态）。创建期间交给
+  // newSession 自己收口。创建结束后（含创建失败）每轮都会校验，避免「创建期跳过后列表
+  // 已同步、idSeq 恒相等」导致 currentId 悬空永不纠正。
+  if (!state.creating && state.currentId && !state.sessions.some((s) => s.id === state.currentId)) {
+    await openSession(state.sessions[0]?.id ?? null);
   }
   renderBindHint();
 }
@@ -474,6 +473,9 @@ async function loadHistory(seq, id) {
   if (seq !== openSeq) return; // 已有更新的打开请求：丢弃本次过期结果
   if (!res.ok) {
     addMsg('sys', res.error ?? '加载失败');
+    // 历史加载失败不应把「新建」按钮锁死（currentHasMessages 恒 false 会导致按钮长期置灰、
+    // 无重试入口）。放宽为「视为有内容」，允许开新会话或重新进入本会话重试（H4）。
+    state.currentHasMessages = true;
     updateNewBtn();
     return;
   }
@@ -701,6 +703,11 @@ async function send() {
   const input = $('input');
   const text = input.value.trim();
   if (!text || state.busy) return;
+  // 点＋正在创建（快照耗时）：提示并保留输入，避免 Enter 重入被静默吞掉（M1/M2）
+  if (state.creating) {
+    addMsg('sys', '正在创建会话，请稍候再发送');
+    return;
+  }
   // 空白态自动创建：无会话时先创建第一个会话，消息进入该会话（产品语义）
   if (!state.currentId) {
     await ensureSessionForSend();
@@ -751,6 +758,19 @@ async function pollReply(sessionId) {
   }
   let lastText = '';
   let stableRounds = 0;
+  // 起始基线：记录轮询开始时历史最后一条消息的签名，作为「新内容」判定基准。
+  // 修复 H1：会话已有历史（末条为旧 assistant）时，旧 assistant 与视图最后一块相同、
+  // 会被误当作「稳定」累计，导致新回复落盘前就 return。先取一次基线，只有出现与基线
+  // 不同的 assistant 才数稳定轮。
+  let baselineSig = null;
+  {
+    const r0 = await api(`/api/sessions/${encodeURIComponent(startedId)}`);
+    if (r0.ok) {
+      const h0 = r0.history ?? [];
+      const m0 = h0[h0.length - 1];
+      baselineSig = m0 ? `${m0.role}|${m0.thinking ?? ''}|${m0.text ?? ''}` : '';
+    }
+  }
   // 轮询等待：块级流式（host 按「思考+文本」整块落盘，逐字流式插件拿不到）。
   // 第一个 assistant 块出现即渲染思考内容，正文增长则就地更新；连续无变化判定回复完成。
   for (let i = 0; i < 200; i++) {
@@ -761,9 +781,11 @@ async function pollReply(sessionId) {
     const msgs = res.history ?? [];
     const last = msgs[msgs.length - 1];
     if (last && last.role === 'assistant' && ((last.text ?? '').trim() || (last.thinking ?? '').trim())) {
-      if (placeholder) { placeholder.remove(); placeholder = null; }
       const think = last.thinking ?? '';
       const text = last.text ?? '';
+      // 与起始相同：仍是发送前已有的旧 assistant，不是本次回复，跳过（不渲染、不数稳定）
+      if (baselineSig !== null && `assistant|${think}|${text}` === baselineSig) continue;
+      if (placeholder) { placeholder.remove(); placeholder = null; }
       const cur = $('messages').lastElementChild;
       if (cur && cur.classList.contains('assistant') && cur.dataset.think === think) {
         // 同一块：正文有增长则就地更新（不重复追加）

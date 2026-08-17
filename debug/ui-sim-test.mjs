@@ -130,10 +130,12 @@ function respond(requests, urlSubstr, body, method) {
 
 // ---------- 加载 app.js ----------
 
-function loadApp() {
+function loadApp(opts = {}) {
   const { fetch, requests } = makeFetch();
   const { document, byId } = makeDocument();
   const timers = []; // 捕获 setInterval 回调（不自动触发，测试里手动 tick）
+  const setTimeoutImpl = opts.setTimeout || setTimeout;
+  const clearTimeoutImpl = opts.clearTimeout || clearTimeout;
   const sandbox = {
     console,
     window: { parent: { postMessage() {} }, addEventListener() {}, innerWidth: 400, innerHeight: 600 },
@@ -145,8 +147,8 @@ function loadApp() {
     fetch,
     EventSource: function MockEventSource() { this.close = function () {}; },
     MD: { mdToHtml: (s) => String(s), sanitizeHtml: (s) => String(s) },
-    setTimeout,
-    clearTimeout,
+    setTimeout: setTimeoutImpl,
+    clearTimeout: clearTimeoutImpl,
     setInterval: (fn, ms) => { timers.push({ fn, ms }); return timers.length - 1; },
     clearInterval: () => {},
     navigator: {},
@@ -161,6 +163,16 @@ function loadApp() {
 const EMPTY_LABEL = '（暂无会话，点 ＋ 新建）';
 const label = (byId) => byId.get('session-trigger-label').textContent;
 const messagesHtml = (byId) => byId.get('messages').children.map((c) => c.innerHTML).join('|');
+// 递归收集 messages 子树里的 innerHTML（assistant 正文在 .body 子元素里，非顶层）
+const messagesDeepHtml = (byId) => {
+  const walk = (el) => {
+    let parts = [];
+    if (el.innerHTML) parts.push(el.innerHTML);
+    for (const c of el.children) parts = parts.concat(walk(c));
+    return parts;
+  };
+  return walk(byId.get('messages')).join('|');
+};
 const btnNewDisabled = (byId) => byId.get('btn-new').disabled;
 const btnNewText = (byId) => byId.get('btn-new').textContent;
 
@@ -190,6 +202,34 @@ async function beginCreate(app) {
   app.sandbox.newSession();
   respond(app.requests, '/api/sessions', { ok: true, session: session('S1', '测试会话') }, 'POST');
   await flush();
+}
+
+// 等待下一个未决请求出现（pollReply 循环用），超时返回 null
+async function waitForRequest(app, urlSubstr, method, timeoutMs = 3000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const req = app.requests.find((r) => {
+      if (r.resolved || !r.url.includes(urlSubstr)) return false;
+      if (!method) return true;
+      const m = r.options.method || 'GET'; // api() 对 GET 不传 method
+      return m === method;
+    });
+    if (req) return req;
+    await new Promise((r) => setTimeout(r, 20));
+  }
+  return null;
+}
+
+// 驱动 pollReply 的 GET 轮询：按给定 history 序列依次应答；pollReply 提前退出则返回 false
+async function drivePollReply(app, id, histories) {
+  for (const h of histories) {
+    const req = await waitForRequest(app, `/api/sessions/${id}`, 'GET');
+    if (!req) return false;
+    req.resolved = true;
+    req.resolve(jsonResponse({ ok: true, session: session(id, '测试会话'), history: h }));
+    await flush();
+  }
+  return true;
 }
 
 // ---------- 场景 ----------
@@ -310,6 +350,69 @@ async function scenarioPlaceholder() {
   check('有会话后 placeholder 恢复原文案', app.byId.get('input').placeholder === '在此提问（参考上下文会自动带入主对话内容）', app.byId.get('input').placeholder);
 }
 
+async function scenarioH1SlowReply() {
+  // 同步 setTimeout：pollReply 的 800ms 延迟即时触发，由测试按 GET 应答节奏驱动
+  const app = loadApp({ setTimeout: (fn) => { fn(); return 0; }, clearTimeout: () => {} });
+  const OLD = [
+    { role: 'user', text: '旧问题' },
+    { role: 'assistant', thinking: '旧思考', text: '旧回复' },
+  ];
+  const NEW = [
+    { role: 'user', text: '旧问题' },
+    { role: 'assistant', thinking: '旧思考', text: '旧回复' },
+    { role: 'user', text: '新问题' },
+    { role: 'assistant', thinking: '新思考', text: '新回复' },
+  ];
+  respond(app.requests, '/api/state', stateBody([session('S1', '测试会话')]));
+  await flush();
+  respond(app.requests, '/api/sessions/S1', { ok: true, session: session('S1', '测试会话'), history: OLD });
+  await flush();
+  check('H1 初始末条为旧 assistant', messagesDeepHtml(app.byId).includes('旧回复'), messagesDeepHtml(app.byId));
+  app.byId.get('input').value = '新问题';
+  app.sandbox.send();
+  await flush();
+  respond(app.requests, '/messages', { ok: true, mainStats: { rounds: 0, mode: 'windowed' } });
+  await flush();
+  // 基线 + 4 轮旧 assistant（修复后跳过）+ 新 assistant（渲染）+ 3 轮稳定（return）
+  const driven = await drivePollReply(app, 'S1', [OLD, OLD, OLD, OLD, OLD, NEW, NEW, NEW, NEW]);
+  check('H1 轮询完整驱动（未提前退出）', driven === true);
+  check('H1 慢回复最终渲染新回复', messagesDeepHtml(app.byId).includes('新回复'), messagesDeepHtml(app.byId));
+}
+
+async function scenarioCreatingThenSend() {
+  const app = loadApp();
+  await boot(app, []);
+  app.sandbox.newSession(); // 点＋创建，POST 未决（快照耗时）
+  await flush();
+  const input = app.byId.get('input');
+  input.value = '你好';
+  app.sandbox.send(); // 创建中按 Enter
+  await flush();
+  check('M1 创建中 send 提示稍候', messagesHtml(app.byId).includes('正在创建会话，请稍候再发送'), messagesHtml(app.byId));
+  check('M1 创建中 send 输入保留', input.value === '你好', input.value);
+  check('M1 创建中 send 不发消息', !app.requests.some((r) => r.url.includes('/messages')));
+}
+
+async function scenarioDoubleEnter() {
+  const app = loadApp();
+  await boot(app, []);
+  const input = app.byId.get('input');
+  input.value = '你好';
+  app.sandbox.send(); // 第一次 Enter：自动创建开始
+  await flush();
+  app.sandbox.send(); // 第二次 Enter：creating=true → 提示，不发
+  await flush();
+  check('M2 第二次 Enter 提示稍候', messagesHtml(app.byId).includes('正在创建会话，请稍候再发送'), messagesHtml(app.byId));
+  respond(app.requests, '/api/sessions', { ok: true, session: session('S1', '测试会话') }, 'POST');
+  await flush();
+  const msgReqs = app.requests.filter((r) => r.url.includes('/messages'));
+  check('M2 仅发送一次消息', msgReqs.length === 1, `messages 请求数=${msgReqs.length}`);
+  // 排空：loadHistory 的 GET 与 /messages 收尾
+  respond(app.requests, '/api/sessions/S1', { ok: true, session: session('S1', '测试会话'), history: [] });
+  respond(app.requests, '/messages', { ok: false, error: 'mock' });
+  await flush();
+}
+
 // ---------- 主流程 ----------
 
 async function main() {
@@ -331,6 +434,12 @@ async function main() {
   await scenarioAutoCreateFail();
   console.log('');
   await scenarioPlaceholder();
+  console.log('');
+  await scenarioH1SlowReply();
+  console.log('');
+  await scenarioCreatingThenSend();
+  console.log('');
+  await scenarioDoubleEnter();
   console.log('');
   const passed = results.filter((r) => r.ok).length;
   console.log(`---- ${passed}/${results.length} PASS ----`);
