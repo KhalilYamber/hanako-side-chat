@@ -31,6 +31,13 @@ const SURFACE = document.documentElement.dataset.surface || 'widget';
 let state = { sessions: [], config: null, currentId: null, busy: false, creating: false, deleting: false, currentHasMessages: false, lastMainPath: null, mainPath: null };
 let timer = null;
 
+// 输入框引导文案：空白态（无会话）提示自动创建，有会话恢复原文案
+const INPUT_PLACEHOLDER_DEFAULT = '在此提问（参考上下文会自动带入主对话内容）';
+const INPUT_PLACEHOLDER_EMPTY = '直接输入，将自动创建第一个会话';
+function updateInputPlaceholder() {
+  $('input').placeholder = state.sessions.length ? INPUT_PLACEHOLDER_DEFAULT : INPUT_PLACEHOLDER_EMPTY;
+}
+
 async function api(path, opts = {}) {
   const sep = path.includes('?') ? '&' : '?';
   const extra = [];
@@ -120,6 +127,7 @@ function renderSessionList() {
   const label = cur ? (cur.unbound ? `（未绑定）${cur.title}` : cur.title) : '（暂无会话，点 ＋ 新建）';
   $('session-trigger-label').textContent = label;
   $('session-trigger').title = cur ? label : '选择会话';
+  updateInputPlaceholder();
   if (!isSessionListOpen()) return;
   const list = $('session-list');
   list.innerHTML = '';
@@ -454,6 +462,14 @@ async function openSession(id) {
     renderBindHint();
     return;
   }
+  // 「进入」与「历史加载」彻底解耦：进入（currentId + 渲染）已同步完成，历史异步拉取，
+  // 失败/挂起绝不影响「已进入」状态与发消息能力（newSession / 空白态自动创建都依赖此点）。
+  loadHistory(seq, id).catch(() => {});
+}
+
+// 会话历史异步加载：只负责渲染历史与同步惰性归属，不参与「进入」判定。
+// seq 用于丢弃过期结果（期间若已切换到别的会话，本次结果作废）。
+async function loadHistory(seq, id) {
   const res = await api(`/api/sessions/${encodeURIComponent(id)}`);
   if (seq !== openSeq) return; // 已有更新的打开请求：丢弃本次过期结果
   if (!res.ok) {
@@ -656,10 +672,40 @@ async function saveRename() {
   exitRename();
 }
 
+// 空白态发消息时自动创建第一个会话：skipSummary 跳过快照（快照由首次发消息时 syncMainContext 补建）。
+// 成功则 currentId 已指向新会话（openSession 立即进入，历史异步加载）；失败则 currentId 保持空，调用方不发送。
+async function ensureSessionForSend() {
+  if (state.creating) return; // 创建锁：newSession 或本函数重入时直接返回
+  state.creating = true;
+  const btn = $('btn-send');
+  const original = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '正在创建会话…';
+  try {
+    const res = await api('/api/sessions', { method: 'POST', body: JSON.stringify({ skipSummary: true }), timeout: 90000 });
+    if (!res.ok) {
+      addMsg('sys', res.error ?? '自动创建会话失败');
+      return;
+    }
+    state.sessions = [res.session, ...state.sessions.filter((s) => s.id !== res.session.id)];
+    renderSessionList();
+    openSession(res.session.id); // 进入（历史异步加载，不阻塞发送）
+  } finally {
+    state.creating = false;
+    btn.textContent = original;
+    btn.disabled = false;
+  }
+}
+
 async function send() {
   const input = $('input');
   const text = input.value.trim();
-  if (!text || !state.currentId || state.busy) return;
+  if (!text || state.busy) return;
+  // 空白态自动创建：无会话时先创建第一个会话，消息进入该会话（产品语义）
+  if (!state.currentId) {
+    await ensureSessionForSend();
+    if (!state.currentId) return; // 创建失败：不发送
+  }
   const sid = state.currentId;
   state.busy = true;
   $('btn-send').disabled = true;

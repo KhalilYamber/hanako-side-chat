@@ -260,6 +260,56 @@ async function scenarioSwitchExisting() {
   check('切换后为测试会话', label(app.byId) === '测试会话', label(app.byId));
 }
 
+async function scenarioAutoCreateSend() {
+  const app = loadApp();
+  await boot(app, []);
+  const input = app.byId.get('input');
+  input.value = '你好';
+  app.sandbox.send(); // 空白态发消息 → 自动创建
+  await flush();
+  const createReq = app.requests.find(
+    (r) => !r.resolved && r.url.includes('/api/sessions') && r.options.method === 'POST' && !r.url.includes('/messages'),
+  );
+  check('自动创建先发 POST /api/sessions 且 skipSummary', !!createReq && JSON.parse(createReq.options.body).skipSummary === true);
+  respond(app.requests, '/api/sessions', { ok: true, session: session('S1', '测试会话') }, 'POST');
+  await flush();
+  const createIdx = app.requests.findIndex((r) => r.url.includes('/api/sessions') && r.options.method === 'POST' && !r.url.includes('/messages'));
+  const msgIdx = app.requests.findIndex((r) => r.url.includes('/messages'));
+  check('顺序：先创建再发消息', createIdx >= 0 && msgIdx >= 0 && createIdx < msgIdx);
+  check('自动创建后触发器进入新会话', label(app.byId) === '测试会话', label(app.byId));
+  check('自动创建后消息已渲染', messagesHtml(app.byId).includes('你好'), messagesHtml(app.byId));
+  check('自动创建后输入框清空', input.value === '', input.value);
+  // 排空：loadHistory 的 GET 与 /messages 都收尾，避免残留定时器
+  respond(app.requests, '/api/sessions/S1', { ok: true, session: session('S1', '测试会话'), history: [] });
+  respond(app.requests, '/messages', { ok: false, error: 'mock' });
+  await flush();
+}
+
+async function scenarioAutoCreateFail() {
+  const app = loadApp();
+  await boot(app, []);
+  const input = app.byId.get('input');
+  input.value = '你好';
+  app.sandbox.send();
+  await flush();
+  respond(app.requests, '/api/sessions', { ok: false, error: '创建会话失败' }, 'POST');
+  await flush();
+  check('自动创建失败提示错误', messagesHtml(app.byId).includes('创建会话失败'), messagesHtml(app.byId));
+  check('自动创建失败不发送（无 /messages）', !app.requests.some((r) => r.url.includes('/messages')));
+  check('自动创建失败输入保留', input.value === '你好', input.value);
+  check('自动创建失败仍空白态', label(app.byId) === EMPTY_LABEL, label(app.byId));
+}
+
+async function scenarioPlaceholder() {
+  const app = loadApp();
+  await boot(app, []);
+  check('空白态 placeholder 引导文案', app.byId.get('input').placeholder === '直接输入，将自动创建第一个会话', app.byId.get('input').placeholder);
+  app.sandbox.newSession();
+  respond(app.requests, '/api/sessions', { ok: true, session: session('S1', '测试会话') }, 'POST');
+  await flush();
+  check('有会话后 placeholder 恢复原文案', app.byId.get('input').placeholder === '在此提问（参考上下文会自动带入主对话内容）', app.byId.get('input').placeholder);
+}
+
 // ---------- 主流程 ----------
 
 async function main() {
@@ -275,6 +325,12 @@ async function main() {
   await scenarioNToNPlusOne();
   console.log('');
   await scenarioSwitchExisting();
+  console.log('');
+  await scenarioAutoCreateSend();
+  console.log('');
+  await scenarioAutoCreateFail();
+  console.log('');
+  await scenarioPlaceholder();
   console.log('');
   const passed = results.filter((r) => r.ok).length;
   console.log(`---- ${passed}/${results.length} PASS ----`);

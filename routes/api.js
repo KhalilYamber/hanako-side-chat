@@ -267,7 +267,9 @@ export default function registerSideChatRoutes(app, ctx) {
       // 创建时快照（2026-08-16 用户设计）：立即采集主对话上下文，快照即完整。
       // full = 全部轮原文；windowed = 最近 N 轮原文 + 更早轮摘要（摘要此刻调一次模型）。
       // 无主会话/读取失败时不阻断创建：mainCtx 缺失，首次发消息时自动补建。
-      if (boundMain && created?.id) {
+      // skipSummary（空白态自动创建用）：跳过快照（含摘要模型调用），创建更快；
+      // mainCtx 缺失由 POST /messages 的 syncMainContext 在首次发消息时补建。
+      if (boundMain && created?.id && body.skipSummary !== true) {
         try {
           const snap = await buildMainSnapshot(pctx, c, cfg, boundMain);
           if (snap) {
