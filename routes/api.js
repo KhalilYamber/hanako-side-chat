@@ -61,7 +61,9 @@ export default function registerSideChatRoutes(app, ctx) {
     const main = await mainSessionInfo(pctx, c, { relocate: c.req.query('relocate') === '1' });
     // 隔离过滤（树枝-树叶模型）：有当前主会话时按归属过滤，无效绑定标记 unbound 透给前端
     const visible = main?.sessionPath ? await filterSessionsByMain(pctx, sessions, main.sessionPath) : sessions;
-    return c.json({ ok: true, config: cfg, sessions: visible, main });
+    // config 回显白名单（安全）：readConfig 含 providersJson（明文 apiKey），
+    // 绝不能经 state/settings 回流前端（红队 2026-08-17 P1）。前端只用 contextMode/windowSize。
+    return c.json({ ok: true, config: safeConfig(cfg), sessions: visible, main });
   });
 
   // ---------- 健康自检（借鉴 DSHana 诊断思路） ----------
@@ -223,7 +225,6 @@ export default function registerSideChatRoutes(app, ctx) {
             // 忽略
           }
         };
-        signal?.addEventListener('abort', cleanup, { once: true });
         // 自清理兜底（REVIEW2 发现 12）：host 不触发 abort 时（raw.signal 不可靠），
         // 30 秒自检流是否已被消费端取消（desiredSize === null），是则主动清理；
         // 10 分钟无活动超时兜底。双保险防订阅与定时器泄漏。
@@ -238,7 +239,8 @@ export default function registerSideChatRoutes(app, ctx) {
           clearTimeout(idleTimer);
           _base();
         };
-        // 用 cleanupAll 替换信号监听与 selfCheck/idleTimer 的调用目标
+        // 红队 2026-08-17 P2-10：signal 只注册 cleanupAll 一个监听（原实现另注册了
+        // cleanup，abort 双触发，靠 cleaned 幂等兜底，冗余）
         signal?.addEventListener('abort', cleanupAll, { once: true });
         // selfCheck/idleTimer 里仍指向 cleanup（原版），cleanup 幂等 + 兜底定时器
         // 在 cleanupAll 里回收；若 abort 先触发，selfCheck 会继续跑但 cleanup 幂等无害，
@@ -525,7 +527,7 @@ export default function registerSideChatRoutes(app, ctx) {
         return c.json({ ok: false, error: `设置保存失败：${String(e?.message ?? e).slice(0, 200)}` });
       }
     }
-    return c.json({ ok: true, config: cfg });
+    return c.json({ ok: true, config: safeConfig(cfg) });
   });
 
   // ---------- 供应商（插件独立配置，直连 API 架构） ----------
@@ -572,10 +574,16 @@ export default function registerSideChatRoutes(app, ctx) {
 
   // POST /api/providers/test —— 测试连接：GET {规整 baseUrl}/models 轻量验证 baseUrl+key
   // （key 仅本次请求使用，不落盘；用户确认可用后再保存）
+  // SSRF 防线（红队 2026-08-17 P1）：baseUrl 必须 https，或 http 且仅限本机回环
+  // （Ollama 本地场景 http://localhost:11434/v1）。其余一律拒绝，防止 iframe 内脚本探测内网。
   app.post('/api/providers/test', async (c) => {
     const body = await c.req.json().catch(() => ({}));
+    const baseUrl = String(body.baseUrl ?? '').trim();
+    if (!isSafeTestBaseUrl(baseUrl)) {
+      return c.json({ ok: false, error: 'baseUrl 不受支持：仅允许 https，或 http 且仅限本机（localhost/127.0.0.1）' });
+    }
     const adapter = await loadModelAdapter();
-    const res = await adapter.testConnection({ baseUrl: body.baseUrl, apiKey: body.apiKey });
+    const res = await adapter.testConnection({ baseUrl, apiKey: body.apiKey });
     if (!res.ok) {
       const err = res.error ?? {};
       return c.json({ ok: false, error: err.message ?? '连接失败', ...(err.status ? { status: err.status } : {}) });
@@ -664,6 +672,37 @@ function maskProvider(p) {
   return { ...rest, apiKey: '', hasKey: !!String(apiKey ?? '').trim() };
 }
 
+// config 回显白名单（安全）：readConfig 的完整对象含 providersJson（明文 apiKey）与
+// providerImportJson/importedProviders 旧快照，绝不直接回流前端（红队 2026-08-17 P1）。
+// 只透出设置面板真正用到的字段；新增配置字段时须同步此白名单。
+function safeConfig(cfg) {
+  if (!cfg || typeof cfg !== 'object') return {};
+  return {
+    contextMode: cfg.contextMode ?? 'windowed',
+    windowSize: cfg.windowSize ?? 30,
+    includeThinking: cfg.includeThinking ?? true,
+    model: cfg.model ?? '',
+    selfPrompt: cfg.selfPrompt ?? '',
+  };
+}
+
+// SSRF 防线（红队 2026-08-17 P1）：测试连接/直连请求的 baseUrl 白名单校验。
+// https 任意 host 放行；http 仅本机回环（Ollama 本地场景）；其余拒绝。
+// 注意：不校验 model-adapter 内部从配置读取的 baseUrl（那是用户自己保存的），
+// 只守「外部请求能触发任意地址请求」的接口边界。
+function isSafeTestBaseUrl(raw) {
+  const s = String(raw ?? '').trim();
+  if (!/^https?:\/\//i.test(s)) return false;
+  if (/^https:\/\//i.test(s)) return true;
+  try {
+    const u = new URL(s);
+    const host = u.hostname.toLowerCase();
+    return host === 'localhost' || host === '127.0.0.1' || host === '[::1]' || host === '::1';
+  } catch {
+    return false;
+  }
+}
+
 async function readConfig(ctx) {
   const base = {
     contextMode: 'windowed',
@@ -671,30 +710,19 @@ async function readConfig(ctx) {
     includeThinking: true,
     model: '',
     selfPrompt: DEFAULT_SELF_PROMPT,
-    providerImportJson: '',
-    importedProviders: {},
     providersJson: '',
     defaultProviderId: '',
     defaultModel: '',
   };
   const cur = ctx.config?.get ? await ctx.config.get() : null;
   if (cur && typeof cur === 'object') {
-    for (const k of ['contextMode', 'windowSize', 'includeThinking', 'model', 'selfPrompt', 'providerImportJson', 'providersJson', 'defaultProviderId', 'defaultModel']) {
+    for (const k of ['contextMode', 'windowSize', 'includeThinking', 'model', 'selfPrompt', 'providersJson', 'defaultProviderId', 'defaultModel']) {
       if (cur[k] !== undefined) base[k] = cur[k];
     }
   }
   // selfPrompt 空串（新装默认/用户清空）回退内置默认文案：
   // 语义 =「清空恢复默认」，而不是禁用（REVIEW3 H1 修正，保证机制始终可用）
   if (!String(base.selfPrompt ?? '').trim()) base.selfPrompt = DEFAULT_SELF_PROMPT;
-  // 供应商导入快照（仅 baseUrl/api/models，无密钥）存于 manifest 声明的 providerImportJson 字段
-  if (typeof base.providerImportJson === 'string' && base.providerImportJson) {
-    try {
-      const parsed = JSON.parse(base.providerImportJson);
-      if (parsed && typeof parsed === 'object') base.importedProviders = parsed;
-    } catch {
-      // 解析失败按空处理
-    }
-  }
   return base;
 }
 

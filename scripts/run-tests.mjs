@@ -16,7 +16,11 @@ const ROOT = path.resolve(__dirname, '..');
 const DSH_BASE_URL = process.env.DSH_BASE_URL || 'http://host.docker.internal:3080';
 
 const TESTS = [
+  { name: 'ui-sim-test', file: 'debug/ui-sim-test.mjs', args: [], required: true, desc: 'UI 模拟回归（DOM 状态机，53+ 场景）' },
   { name: 'md-render-test', file: 'debug/md-render-test.mjs', args: [], required: true, desc: 'markdown 渲染管线单测（含 XSS/URL 括号/高亮）' },
+  { name: 'model-adapter-test', file: 'debug/model-adapter-test.mjs', args: [], required: true, desc: 'ModelAdapter 单测（SSE/URL 规整/错误分类）' },
+  { name: 'provider-store-test', file: 'debug/provider-store-test.mjs', args: [], required: true, desc: 'ProviderStore 单测（模板/脱敏/默认解析）' },
+  { name: 'profile-provider-test', file: 'debug/profile-provider-test.mjs', args: [], required: true, desc: 'ProfileProvider 单测（bus/文件降级）' },
   { name: 'smoke-test', file: 'debug/smoke-test.cjs', args: [], required: true, desc: '语法/补丁自测/索引/容器联动冒烟' },
   { name: 'check-host-patch', file: 'debug/check-host-patch.js', args: ['--selftest'], required: true, desc: 'host 补丁检测逻辑自测（内存样本）' },
   { name: 'check-renderer-patch', file: 'debug/check-renderer-patch.js', args: ['--selftest'], required: true, desc: 'renderer 补丁检测逻辑自测（内存样本）' },

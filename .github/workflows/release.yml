@@ -57,8 +57,12 @@ jobs:
 
       # --json：结果走 stdout 供日志消费。索引项与 Docker 项在 CI 环境自动跳过（属正常降级），
       # 语法校验与补丁检测自测为必过项，红了即阻断发布。
-      - name: 回归（语法 + 补丁自测必过；索引/Docker 项 CI 上自动跳过）
-        run: node debug/smoke-test.cjs --json
+      # check-all 全量回归（含 ui-sim/model-adapter/provider-store/profile-provider 全部单测，
+      # 红队 2026-08-17 P1：里程碑 2 新代码此前在 CI 零覆盖），再跑 smoke-test 冒烟。
+      - name: 回归（check-all 全量 + smoke-test 冒烟）
+        run: |
+          node scripts/check-all.mjs
+          node debug/smoke-test.cjs --json
 
       # 发布三要素：附件 zip + sha256、notes 取 CHANGELOG 当前版本段落。
       # notes 提取规则：从 "## [<version>]" 行起，到下一个 "## [" 段落或任何一级标题("# ")为止

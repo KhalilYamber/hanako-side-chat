@@ -119,10 +119,11 @@ const DONE = 'data: [DONE]';
     params: { temperature: 0.7, max_tokens: 100, stream: false, top_p: undefined, seed: null },
   });
   check('2.1 stream 强制 true', b.stream === true);
-  check('2.2 合法 role 保留', b.messages.length === 4, JSON.stringify(b.messages));
+  // 红队 P2-8：第一版仅文本，content 数组形态显式丢弃（不再透传）
+  check('2.2 合法 role 保留（数组形态丢弃后 3 条）', b.messages.length === 3, JSON.stringify(b.messages));
   check('2.3 params 透传 temperature/max_tokens', b.temperature === 0.7 && b.max_tokens === 100);
   check('2.4 params 过滤 stream/undefined/null', b.stream === true && !('top_p' in b) && !('seed' in b));
-  check('2.5 content 数组形态透传', Array.isArray(b.messages[3].content));
+  check('2.5 content 数组形态丢弃', !b.messages.some((m) => Array.isArray(m.content)));
   const empty = ma.buildRequestBody({ model: 'm', messages: 'junk', params: 'junk' });
   check('2.6 非数组 messages → 空数组不崩', Array.isArray(empty.messages) && empty.messages.length === 0);
 }
@@ -193,6 +194,16 @@ const DONE = 'data: [DONE]';
   const fetchImpl2 = mockFetch(sseResponse(['', '']));
   const r2 = await ma.streamChat({ ...BASE_OPTS, fetchImpl: fetchImpl2 });
   check('9.2 无内容无 [DONE]：kind stream', r2.ok === false && r2.error.kind === 'stream', JSON.stringify(r2.error));
+}
+
+// 9.5 正常结束但内容全空 → empty 标记（红队 P2-7）
+{
+  const fetchImpl = mockFetch(sseResponse(['data: {"choices":[{"delta":{}}]}', '', DONE, '']));
+  const r = await ma.streamChat({ ...BASE_OPTS, fetchImpl });
+  check('9.5.1 空内容有 [DONE]：ok:true + empty:true', r.ok === true && r.empty === true, JSON.stringify(r));
+  const fetchImpl2 = mockFetch({ ok: true, status: 200, body: null, text: async () => '' });
+  const r2 = await ma.streamChat({ ...BASE_OPTS, fetchImpl: fetchImpl2 });
+  check('9.5.2 非流空 body：ok:true + empty:true', r2.ok === true && r2.empty === true, JSON.stringify(r2));
 }
 
 // 10. reader 抛错 → kind stream

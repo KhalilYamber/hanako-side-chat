@@ -45,12 +45,12 @@ lib/host-adapter.js（新）
 │   ├── readHistory / readJsonl                   → 主源 JSONL 直读 + history 降级（✅ 步骤 2）
 │   ├── sendMessage(ctx, {path, text, context})   → 包装 session:send + 两套上下文（✅ 步骤 2）
 │   ├── sampleText(ctx, payload)                  → 包装 model:sample-text，摘要采样（✅ 步骤 5）
-│   ├── getAgentProfile / getAgentModel           → agent:profile / agent:config（只取 models.chat）⚠️ 未实现
-│   └── listSessions(ctx, agentId)                → session:list + path/visibility/modified 解析 ⚠️ 未实现
+│   ├── getAgentProfile / getAgentModel           → 已独立为 lib/profile-provider.js（bus agent:profile，含文件降级，2026-08-17）✅
+│   └── listSessions(ctx, agentId)                → session:list + path/visibility/modified 解析（✅ 步骤 2，getPublicSessionPaths 等已实现）
 └── 凭证与请求上下文
     ├── resolveToken(c)        → iframe URL token 解析（✅ 步骤 3，自 routes/widget.js 迁入）
     ├── injectAssetsToken(html, token)            → token 注入 assets 引用 URL（✅ 步骤 3）
-    └── isPatchRequired()     → 面板诊断用（host 补丁状态）⚠️ 未实现
+    └── isPatchRequired()     → 面板诊断用（host 补丁状态，lib/patch-check.mjs 承载）✅
 ```
 
 ### 3.2 对外接口（业务代码视角）
@@ -77,7 +77,7 @@ lib/host-adapter.js（新）
 
 ### 3.4 验收标准
 
-- 业务代码中 grep 不到 `bus.` / `session:create` 等 host 调用字面量（全部经 adapter）。
+- 业务代码中 grep 不到 `bus.` / `session:create` 等 host 调用字面量（全部经 adapter；SSE 订阅的 pctx.bus.subscribe 例外，属宿主事件通道，已注释说明）。
 - `resolveMainSessionPath` 的降级链行为与现状完全一致（对照现有单测/冒烟断言）。
 - host 补丁丢失时 `info(ctx).patches` 正确反映，面板诊断直接读 adapter（替换现在散落的检测调用）。
 
