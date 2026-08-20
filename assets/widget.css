@@ -339,6 +339,8 @@ body {
 .provider-test-result { font-size: 11px; word-break: break-all; }
 .provider-test-result.ok { color: var(--green, #34A853); }
 .provider-test-result.fail { color: var(--coral, #D9746C); }
+/* v36：密钥已保存常驻提示（绿色小字，位于密钥输入框下方，重渲染不消失） */
+.provider-key-saved { font-size: 11px; color: var(--green, #34A853); }
 .provider-defaults { display: flex; align-items: center; gap: 6px; font-size: 12px; flex-wrap: wrap; }
 .provider-defaults select { flex: 1; min-width: 0; }
 .provider-add { display: flex; align-items: center; gap: 6px; }

@@ -335,8 +335,17 @@ export default function registerSideChatRoutes(app, ctx) {
     await lazyBindUnbound(pctx, c, entry);
     let history = [];
     try {
-      const res = await (await loadAdapter()).readHistory(pctx, entry.sessionPath, 200);
-      history = normalizeHistory(res);
+      const adapter = await loadAdapter();
+      // 【里程碑 3 修复】历史读取文件直读优先：JSONL 是事实源（直连 appendFileSync 与
+      // host 管道落盘同一格式）。host 的 session:history 走会话缓存，读不到直连写入的行，
+      // 前端 loadHistory/pollReply 会永远等不到 assistant 回复（无限「思考中」）。
+      if (entry.sessionPath && fs.existsSync(entry.sessionPath)) {
+        history = adapter.readSessionHistory(entry.sessionPath, 200);
+      } else {
+        // 降级保底：文件缺失（旧数据/异常环境）时走 host 官方通道 + normalizeHistory
+        const res = await adapter.readHistory(pctx, entry.sessionPath, 200);
+        history = normalizeHistory(res);
+      }
     } catch (e) {
       return c.json({ ok: false, error: `读取历史失败：${e?.message ?? e}` });
     }

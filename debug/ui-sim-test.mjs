@@ -62,6 +62,7 @@ class MockElement {
   get innerHTML() { return this._innerHTML; }
   set innerHTML(v) { this._innerHTML = String(v); this.children = []; }
   appendChild(child) { child.parentNode = this; this.children.push(child); return child; }
+  get parentElement() { return this.parentNode; } // 与真实 DOM 对齐（providerCard 常驻提示挂 keyInput.parentElement）
   insertBefore(child, ref) {
     child.parentNode = this;
     const i = ref ? this.children.indexOf(ref) : -1;
@@ -575,6 +576,49 @@ async function scenarioTestConnectMergesModels() {
   }
 }
 
+async function scenarioProviderKeySavedHint() {
+  const app = loadApp();
+  await boot(app, []);
+  respondProviders(app, PROVIDERS_BODY); // ds hasKey=true
+  await flush();
+  app.byId.get('btn-settings').onclick();
+  await flush();
+  respondProviders(app, PROVIDERS_BODY);
+  await flush();
+  const card = app.byId.get('provider-area').children[1];
+  // 卡片字段顺序：head、Base URL label、密钥 label（input + 常驻提示）、模型 label、actions
+  const keyLabel = card.children[2];
+  const hint = keyLabel.children[2];
+  check('v36 hasKey 卡片渲染「密钥已保存」常驻提示', !!hint && hint.className === 'provider-key-saved' && hint.textContent.includes('密钥已保存'), hint?.textContent ?? 'no hint');
+  check('v36 提示文案含「留空保持不变」', !!hint && hint.textContent.includes('留空保持不变'), hint?.textContent ?? 'no hint');
+  // 保存成功 → 重渲染后提示仍常驻（基于 hasKey 渲染，不随 renderProviderArea 消失）
+  const actions = card.children.find((c) => c.className === 'provider-actions');
+  actions.children[1].onclick();
+  await flush();
+  const putReq = app.requests.find((r) => !r.resolved && r.url.includes('/api/providers') && r.options.method === 'PUT');
+  if (putReq) {
+    putReq.resolved = true;
+    putReq.resolve(jsonResponse({ ok: true, providers: [PROVIDER_DS(true)] }));
+    await flush();
+  }
+  const card2 = app.byId.get('provider-area').children[1];
+  const hint2 = card2.children[2]?.children[2];
+  check('v36 保存重渲染后提示仍常驻', !!hint2 && hint2.className === 'provider-key-saved' && hint2.textContent.includes('密钥已保存'), hint2?.textContent ?? 'no hint');
+  // 反向：hasKey=false（未保存过密钥）不渲染提示
+  const app2 = loadApp();
+  await boot(app2, []);
+  respondProviders(app2, { ok: true, providers: [PROVIDER_DS(false)], defaultProviderId: 'ds', defaultModel: 'deepseek-chat' });
+  await flush();
+  app2.byId.get('btn-settings').onclick();
+  await flush();
+  respondProviders(app2, { ok: true, providers: [PROVIDER_DS(false)], defaultProviderId: 'ds', defaultModel: 'deepseek-chat' });
+  await flush();
+  const cardN = app2.byId.get('provider-area').children[1];
+  const keyLabelN = cardN.children[2];
+  const hintN = keyLabelN.children[2];
+  check('v36 hasKey=false 不渲染常驻提示', !hintN || hintN.className !== 'provider-key-saved', hintN?.className ?? 'no hint');
+}
+
 // ---------- 主流程 ----------
 
 async function main() {
@@ -608,6 +652,8 @@ async function main() {
   await scenarioProviderCardSave();
   console.log('');
   await scenarioProviderKeyInput();
+  console.log('');
+  await scenarioProviderKeySavedHint();
   console.log('');
   await scenarioTestConnectMergesModels();
   console.log('');

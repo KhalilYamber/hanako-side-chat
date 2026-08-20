@@ -1033,6 +1033,14 @@ function providerCard(p) {
   const urlInput = field(card, 'Base URL', p.baseUrl, 'https://api.example.com/v1');
   const keyInput = field(card, 'API 密钥（仅存本机）', '', p.hasKey ? '密钥已保存，留空保持不变' : 'sk-…（可选）');
   keyInput.type = 'password';
+  // v36 常驻反馈：hasKey 时在密钥框下方常驻一行绿色小字。保存成功触发 renderProviderArea()
+  // 重渲染后依然存在（基于 p.hasKey 渲染），避免「保存成功 → 反馈消失 → 误以为 key 丢了」。
+  if (p.hasKey) {
+    const savedHint = document.createElement('div');
+    savedHint.className = 'provider-key-saved';
+    savedHint.textContent = '✓ 密钥已保存（留空保持不变）';
+    keyInput.parentElement?.appendChild(savedHint);
+  }
 
   const ml = document.createElement('label');
   const mlText = document.createElement('span');
