@@ -1,7 +1,12 @@
 # SideChat 辅助对话
 
+> ## ⚠️ 项目已停止维护（2026-08）
+>
+> HanaAgent 新版本已内置与本插件重叠的侧边辅助对话能力，本项目的使命已完成，不再接收新功能与修复。
+> 仓库与全部 Release 保留存档，仍可参考、自行部署或 fork 继续开发。感谢使用。
+
 ![License](https://img.shields.io/badge/license-MIT-green)
-![Version](https://img.shields.io/badge/version-v0.4.0-blue)
+![Version](https://img.shields.io/badge/version-v0.4.1-blue)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
 ![Hana](https://img.shields.io/badge/HanaAgent-0.82%2B-orange)
 
