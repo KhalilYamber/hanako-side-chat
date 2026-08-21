@@ -2,7 +2,7 @@
 
 > ## ⚠️ 项目已停止维护（2026-08）
 >
-> HanaAgent 新版本已内置与本插件重叠的侧边辅助对话能力，本项目的使命已完成，不再接收新功能与修复。
+> HanaAgent 新版本已内置与本插件重叠的辅助对话能力，本项目的使命已完成，不再接收新功能与修复。
 > 仓库与全部 Release 保留存档，仍可参考、自行部署或 fork 继续开发。感谢使用。
 
 ![License](https://img.shields.io/badge/license-MIT-green)
